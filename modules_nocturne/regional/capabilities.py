@@ -88,6 +88,10 @@ class AdapterRegistry:
                 return adapter
         return None
 
+    def get(self, adapter_id: str) -> RegionalModelAdapter | None:
+        with self._lock:
+            return self._adapters.get(adapter_id)
+
     def clear(self) -> None:
         with self._lock:
             self._adapters.clear()

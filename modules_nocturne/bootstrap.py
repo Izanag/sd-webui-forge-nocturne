@@ -7,6 +7,28 @@ LOGGER = logging.getLogger("nocturne")
 
 _registration_lock = Lock()
 _options_registered = False
+_runtime_registered = False
+
+
+def register_runtime_components() -> None:
+    """Register proven model adapters without claiming an unavailable engine."""
+
+    global _runtime_registered
+
+    with _registration_lock:
+        if _runtime_registered:
+            return
+
+        from modules_nocturne.regional.adapters.sd15 import sd15_adapter
+        from modules_nocturne.regional.capabilities import capability_service
+
+        registered = capability_service.adapters.get(sd15_adapter.adapter_id)
+        if registered is None:
+            capability_service.adapters.register(sd15_adapter)
+        elif registered is not sd15_adapter:
+            raise RuntimeError(f"Conflicting Regional adapter registration: {sd15_adapter.adapter_id}")
+        _runtime_registered = True
+        LOGGER.debug("Nocturne runtime components registered")
 
 
 def register_options(
@@ -21,6 +43,8 @@ def register_options(
     """Register Nocturne settings without loading a model or touching the GPU."""
 
     global _options_registered
+
+    register_runtime_components()
 
     with _registration_lock:
         if _options_registered:
