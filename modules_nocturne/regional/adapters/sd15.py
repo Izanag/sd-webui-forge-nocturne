@@ -318,6 +318,22 @@ class StrictSD15Adapter:
     def supported_conditioning_branches(self) -> frozenset[str]:
         return frozenset({"positive", "negative"})
 
+    def validate_conditioning_value(self, value: Any) -> None:
+        import torch
+
+        if (
+            not torch.is_tensor(value)
+            or value.ndim != 2
+            or value.shape[-1] != 768
+        ):
+            raise RuntimeError(
+                "SD 1.5 Regional conditioning must be a 768-wide two-dimensional tensor"
+            )
+
+    def cross_attention_context(self, value: Any) -> Any:
+        self.validate_conditioning_value(value)
+        return value
+
     def sampler_hooks(self) -> frozenset[str]:
         return frozenset({"attn2_replace"})
 

@@ -1,17 +1,31 @@
-"""SD 1.5 cross-attention decomposition engine."""
+"""U-Net cross-attention decomposition engine for proven model adapters."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Protocol
 
-from modules_nocturne.regional.adapters.sd15 import AttentionBlockSpec, StrictSD15Adapter, sd15_adapter
+from modules_nocturne.regional.adapters.sd15 import AttentionBlockSpec, sd15_adapter
 from modules_nocturne.regional.capabilities import EngineCapabilities
 from modules_nocturne.regional.conditioning import RegionalConditioningBatch
 from modules_nocturne.regional.errors import PlanError
 from modules_nocturne.regional.model import OverlapPolicy, UncoveredPolicy
 from modules_nocturne.regional.prompts import PromptOwner
 from modules_nocturne.regional.runtime import RegionalBatchCompilation, RegionalRuntime
+
+
+class RegionalAttentionAdapter(Protocol):
+    adapter_id: str
+
+    def attention_blocks(self, model_context: Any) -> tuple[AttentionBlockSpec, ...]: ...
+
+    def attention_grids(self, model_context: Any, *, width: int, height: int): ...
+
+    def cross_attention_modules(self, model_context: Any): ...
+
+    def validate_conditioning_value(self, value: Any) -> None: ...
+
+    def cross_attention_context(self, value: Any) -> Any: ...
 
 
 def _normalised_denoising_progress(extra_options: dict[str, Any]) -> float:
@@ -78,18 +92,18 @@ class AttentionDecompositionEngine:
     def runtime_installer(
         self,
         *,
-        adapter: StrictSD15Adapter = sd15_adapter,
+        adapter: RegionalAttentionAdapter = sd15_adapter,
         attention_function: Callable | None = None,
-    ) -> "SD15AttentionRuntimeInstaller":
-        return SD15AttentionRuntimeInstaller(
+    ) -> "RegionalAttentionRuntimeInstaller":
+        return RegionalAttentionRuntimeInstaller(
             adapter=adapter,
             attention_function=attention_function,
         )
 
 
 @dataclass(slots=True)
-class SD15AttentionRuntimeInstaller:
-    adapter: StrictSD15Adapter = sd15_adapter
+class RegionalAttentionRuntimeInstaller:
+    adapter: RegionalAttentionAdapter = sd15_adapter
     attention_function: Callable | None = None
     memory_budget_mb: int | None = None
     requires_conditioning: bool = True
@@ -157,6 +171,7 @@ class SD15AttentionRuntimeInstaller:
             previous_unet=previous_unet,
             cloned_unet=cloned_unet,
             blocks=self.adapter.attention_blocks(model_context),
+            adapter=self.adapter,
             attention_modules=modules,
             masks_by_block=masks_by_block,
             enabled_region_ids=tuple(region.id for region in plan.regions if region.enabled),
@@ -178,6 +193,10 @@ class SD15AttentionRuntimeInstaller:
         return installation
 
 
+# Compatibility name retained for callers that imported the original SD 1.5-only installer.
+SD15AttentionRuntimeInstaller = RegionalAttentionRuntimeInstaller
+
+
 class InstalledAttentionDecomposition:
     """Own patches on one cloned U-Net and restore the previous patcher once."""
 
@@ -188,6 +207,7 @@ class InstalledAttentionDecomposition:
         previous_unet: Any,
         cloned_unet: Any,
         blocks: tuple[AttentionBlockSpec, ...],
+        adapter: RegionalAttentionAdapter,
         attention_modules,
         masks_by_block,
         enabled_region_ids,
@@ -200,6 +220,7 @@ class InstalledAttentionDecomposition:
         self.previous_unet = previous_unet
         self.cloned_unet = cloned_unet
         self.blocks = blocks
+        self.adapter = adapter
         self.attention_modules = attention_modules
         self.masks_by_block = masks_by_block
         self.enabled_region_ids = tuple(enabled_region_ids)
@@ -244,6 +265,9 @@ class InstalledAttentionDecomposition:
                         "$",
                         "Weighted AND prompts are not yet enabled in the sampler engine",
                     )
+                self.adapter.validate_conditioning_value(
+                    prompt.entries[0].encoded[0].value
+                )
         self.conditioning = conditioning
 
     def _attention(self):
@@ -315,11 +339,13 @@ class InstalledAttentionDecomposition:
                     )
                     continue
                 prompt = image.get(PromptOwner(kind="region", region_id=region_id), polarity)
-                context = prompt.entries[0].encoded[0].value
-                if isinstance(context, dict):
-                    context = context.get("crossattn")
+                context = self.adapter.cross_attention_context(
+                    prompt.entries[0].encoded[0].value
+                )
                 if not torch.is_tensor(context) or context.ndim != 2:
-                    raise RuntimeError("SD 1.5 Regional conditioning must be a two-dimensional tensor")
+                    raise RuntimeError(
+                        "Regional cross-attention conditioning must be a two-dimensional tensor"
+                    )
                 context = context.to(device=q.device, dtype=q.dtype).unsqueeze(0)
                 active_regions.append((region_id, context))
 
@@ -386,6 +412,7 @@ class InstalledAttentionDecomposition:
             self.attention_modules = {}
             self.masks_by_block = {}
             self.guidance_by_region = {}
+            self.adapter = None
             self.model_context = None
             self.previous_unet = None
             self.cloned_unet = None

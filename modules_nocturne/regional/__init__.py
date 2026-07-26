@@ -24,6 +24,7 @@ from modules_nocturne.regional.conditioning import (
 from modules_nocturne.regional.attention_engine import (
     AttentionDecompositionEngine,
     InstalledAttentionDecomposition,
+    RegionalAttentionRuntimeInstaller,
     SD15AttentionRuntimeInstaller,
     attention_decomposition_engine,
 )
@@ -130,6 +131,7 @@ __all__ = [
     "IssueSeverity",
     "InstalledRegionalEngine",
     "InstalledAttentionDecomposition",
+    "RegionalAttentionRuntimeInstaller",
     "ForgeExtraNetworkParse",
     "ForgePromptSchedule",
     "ForgeScheduleEntry",

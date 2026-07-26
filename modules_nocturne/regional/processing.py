@@ -229,8 +229,11 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
             installer_factory = getattr(engine, "runtime_installer", None)
             if engine is None or not callable(installer_factory):
                 raise RuntimeError("The selected Regional engine has no runtime installer")
+            adapter = capability_service.adapters.get(authorized.adapter_id)
+            if adapter is None:
+                raise RuntimeError("The authorized Regional adapter is no longer registered")
             self.authorized_plan = authorized
-            self.runtime_installer = installer_factory()
+            self.runtime_installer = installer_factory(adapter=adapter)
 
         self.regional_runtime = RegionalRuntime(authorized)
         self.regional_metadata_bundle = build_metadata(
