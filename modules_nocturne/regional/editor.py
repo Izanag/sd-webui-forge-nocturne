@@ -190,6 +190,12 @@ def update_generation_options(plan: RegionalGenerationPlan, **changes: Any) -> R
     return replace(plan, engine=replace(plan.engine, options=options))
 
 
+def update_engine_request(plan: RegionalGenerationPlan, requested: str) -> RegionalGenerationPlan:
+    if not requested:
+        raise PlanError("editor.engine.invalid", "$.engine.requested", "Engine selection cannot be empty")
+    return replace(plan, engine=replace(plan.engine, requested=requested))
+
+
 def update_region(plan: RegionalGenerationPlan, region_id: UUID, **changes: Any) -> RegionalGenerationPlan:
     index = next((index for index, region in enumerate(plan.regions) if region.id == region_id), None)
     if index is None:

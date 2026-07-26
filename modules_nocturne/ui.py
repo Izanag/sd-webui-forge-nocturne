@@ -21,11 +21,13 @@ from modules_nocturne.regional.editor import (
     render_mask_preview,
     selected_region,
     update_canvas,
+    update_engine_request,
     update_generation_options,
     update_global_prompts,
     update_region,
     validation_markdown,
 )
+from modules_nocturne.regional.capabilities import capability_service
 from modules_nocturne.regional.errors import PlanError, PlanValidationError
 from modules_nocturne.regional.model import SeedMode
 from modules_nocturne.regional.serialization import canonical_json, plan_hash
@@ -99,6 +101,7 @@ def _snapshot(plan, selected_id, *, status=None, raw_value=None):
         gr.update(value=options.get("batch_count", 1)),
         gr.update(value=options.get("batch_size", 1)),
         gr.update(value=options.get("seed", -1)),
+        _engine_component_update(plan.engine.requested),
     )
     return (*common, *plan_controls, *_selected_updates(plan, selected), *_operation_updates(selected))
 
@@ -185,11 +188,41 @@ def _save_project_file(plan_json):
     return str(destination)
 
 
+def _capability_values():
+    report = capability_service.report(getattr(shared, "sd_model", None))
+    choices = ["auto", *(engine.engine_id for engine in report.eligible_engines)]
+    if report.status == "supported":
+        details = f"Adapter: `{report.adapter_id}`. Eligible engines: {', '.join(choices[1:]) or 'none'}."
+        if report.expected_fallbacks:
+            details += " Expected fallbacks: " + "; ".join(report.expected_fallbacks)
+        return choices, len(choices) > 1, details
+    return ["auto"], False, (
+        f"Auto unavailable: `{report.reason_code or 'model.unsupported'}` — "
+        f"{report.reason or 'Unsupported model.'}"
+    )
+
+
+def _capability_controls(current="auto"):
+    choices, interactive, details = _capability_values()
+    if current not in choices:
+        choices = [*choices, current]
+        details += f" Requested engine `{current}` is not currently eligible; the plan was not changed."
+    return gr.update(choices=choices, value=current, interactive=interactive), details
+
+
+def _engine_component_update(current):
+    choices, interactive, _ = _capability_values()
+    if current not in choices:
+        choices = [*choices, current]
+    return gr.update(choices=choices, value=current, interactive=interactive)
+
+
 def create_regional_interface(create_output_panel: Callable, *, head: str | None = None) -> gr.Blocks:
     """Create the canonical-plan Regional authoring workspace."""
 
     initial_plan = initial_editor_plan()
     initial_json = canonical_json(initial_plan)
+    initial_engine_choices, initial_engine_interactive, initial_capability_status = _capability_values()
 
     with gr.Blocks(analytics_enabled=False, head=head) as regional_interface:
         toprow = ui_toprow.Toprow(is_img2img=False, id_part="regional")
@@ -303,6 +336,21 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         canvas_height = gr.Slider(64, 2048, value=1024, step=8, label="Canvas height")
                     with gr.Accordion("Generation controls", open=True):
                         with gr.Row():
+                            engine_choice = gr.Dropdown(
+                                choices=initial_engine_choices,
+                                value="auto",
+                                label="Regional engine",
+                                interactive=initial_engine_interactive,
+                            )
+                            refresh_capabilities = gr.Button(
+                                "Refresh support",
+                                tooltip="Re-check the loaded model and registered Regional engines",
+                            )
+                        capability_status = gr.Markdown(
+                            initial_capability_status,
+                            elem_id="regional_capability_status",
+                        )
+                        with gr.Row():
                             sampler = gr.Dropdown(
                                 choices=sd_samplers.visible_sampler_names(),
                                 value="Euler a",
@@ -415,6 +463,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             batch_count,
             batch_size,
             seed,
+            engine_choice,
             *selected_components,
             duplicate_button,
             delete_button,
@@ -469,7 +518,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 selected_id,
                 lambda plan, selected: (update_global_prompts(plan, positive, negative), selected),
             )
-            return (*result[:8], *result[19:])
+            return (*result[:8], *result[20:])
 
         def canvas_action(plan_json, selected_id, width, height):
             return _mutate(
@@ -495,6 +544,13 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                     ),
                     selected,
                 ),
+            )
+
+        def engine_action(plan_json, selected_id, requested):
+            return _mutate(
+                plan_json,
+                selected_id,
+                lambda plan, selected: (update_engine_request(plan, requested), selected),
             )
 
         def region_action(plan_json, selected_id, *values):
@@ -603,6 +659,18 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 outputs=full_outputs,
                 show_progress=False,
             )
+        engine_choice.input(
+            engine_action,
+            inputs=[last_valid_plan, selected_region_id, engine_choice],
+            outputs=full_outputs,
+            show_progress=False,
+        )
+        refresh_capabilities.click(
+            _capability_controls,
+            inputs=[engine_choice],
+            outputs=[engine_choice, capability_status],
+            show_progress=False,
+        )
 
         region_inputs = selected_components[:-1]
         for component in region_inputs:
