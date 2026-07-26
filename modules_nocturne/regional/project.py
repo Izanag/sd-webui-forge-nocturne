@@ -13,7 +13,13 @@ from typing import Any, Mapping
 from uuid import UUID
 
 from modules_nocturne.regional.errors import PlanError
-from modules_nocturne.regional.model import CURRENT_SCHEMA, RegionalGenerationPlan
+from modules_nocturne.regional.model import (
+    CURRENT_SCHEMA,
+    PolygonGeometry,
+    RasterMaskGeometry,
+    RectGeometry,
+    RegionalGenerationPlan,
+)
 from modules_nocturne.regional.seeds import ResolvedSeedBatch, ResolvedSeedPlan
 from modules_nocturne.regional.serialization import MAX_JSON_BYTES, canonical_json, load_plan, plan_hash, plan_to_dict
 
@@ -151,6 +157,61 @@ def _summary(plan: RegionalGenerationPlan, selected_engine: str | None) -> str:
     return f"Regional: {len(enabled)}/{len(plan.regions)} enabled; engine={engine}; regions={names or 'none'}"
 
 
+def _display_text(value: str) -> str:
+    return " ".join(value.split()) or "(empty)"
+
+
+def _display_number(value: float) -> str:
+    return format(value, ".6g")
+
+
+def _geometry_summary(geometry: RectGeometry | PolygonGeometry | RasterMaskGeometry) -> str:
+    if isinstance(geometry, RectGeometry):
+        return (
+            "rect("
+            f"x={_display_number(geometry.x)},"
+            f"y={_display_number(geometry.y)},"
+            f"w={_display_number(geometry.width)},"
+            f"h={_display_number(geometry.height)}"
+            ")"
+        )
+    if isinstance(geometry, PolygonGeometry):
+        points = ";".join(
+            f"{_display_number(point.x)},{_display_number(point.y)}"
+            for point in geometry.points
+        )
+        return f"polygon({points})"
+    digest = f",sha256={geometry.sha256}" if geometry.sha256 else ""
+    return f"painted-mask({geometry.width}x{geometry.height}{digest})"
+
+
+def _readable_regions(plan: RegionalGenerationPlan) -> str:
+    if not plan.regions:
+        return "none"
+    entries = []
+    for index, region in enumerate(plan.regions, start=1):
+        state = (
+            ("enabled" if region.enabled else "disabled"),
+            ("locked" if region.locked else "unlocked"),
+            ("hidden" if region.hidden else "visible"),
+        )
+        settings = (
+            f"{'/'.join(state)}; {_geometry_summary(region.geometry)}; "
+            f"weight={_display_number(region.weight)}; priority={region.priority}; "
+            f"feather={_display_number(region.feather_px)}px; "
+            f"grow={_display_number(region.grow_shrink_px)}px; "
+            f"guidance={_display_number(region.guidance.start)}-{_display_number(region.guidance.end)}; "
+            f"inherit-positive={'yes' if region.inherit_global_positive else 'no'}; "
+            f"inherit-negative={'yes' if region.inherit_global_negative else 'no'}"
+        )
+        entries.append(
+            f"{index}. {_display_text(region.name)} [{settings}] "
+            f"positive: {_display_text(region.positive)}; "
+            f"negative: {_display_text(region.negative)}"
+        )
+    return " || ".join(entries)
+
+
 def build_metadata(
     plan: RegionalGenerationPlan,
     *,
@@ -180,6 +241,7 @@ def build_metadata(
         "Nocturne Regional Schema": CURRENT_SCHEMA,
         "Nocturne Regional Hash": document["plan_hash"],
         "Nocturne Regional Summary": _summary(plan, selected_engine),
+        "Nocturne Regional Regions": _readable_regions(plan),
         "Nocturne Regional Requested Engine": plan.engine.requested,
         "Nocturne Regional Selected Engine": selected_engine or "",
         "Nocturne Regional Engine Version": engine_version or "",

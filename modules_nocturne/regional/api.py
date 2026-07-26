@@ -237,8 +237,6 @@ class RegionalApi:
         from modules import processing, shared
         from modules.api.api import encode_pil_to_base64
         from modules.progress import add_task_to_queue, create_task_id, finish_task, start_task
-        from modules_nocturne.regional.errors import PlanValidationError
-        from modules_nocturne.regional.generation import authorize_generation
         from modules_nocturne.regional.processing import StableDiffusionProcessingRegional
         from modules_nocturne.regional.project import build_metadata, save_sidecar
 
@@ -256,37 +254,12 @@ class RegionalApi:
         try:
             with lock:
                 start_task(task_id)
-                model = self.model_provider()
-                capability_report = self.service.report(model)
-                try:
-                    authorized = authorize_generation(
-                        plan,
-                        capability_report,
-                        accepted_issue_codes=frozenset(request.accepted_issue_codes),
-                        accepted_fallbacks=tuple(request.accepted_fallbacks),
-                    )
-                except PlanValidationError as error:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=[issue.as_dict() for issue in error.report.issues],
-                    ) from error
-                except PlanError as error:
-                    raise HTTPException(status_code=422, detail=error.issue.as_dict()) from error
-
-                engine = self.service.engines.get(authorized.engine.engine_id)
-                installer_factory = getattr(engine, "runtime_installer", None)
-                if engine is None or not callable(installer_factory):
-                    raise HTTPException(
-                        status_code=409,
-                        detail="The selected Regional engine has no runtime installer",
-                    )
-
                 shared.state.begin(job="regional")
                 try:
                     with closing(
-                        StableDiffusionProcessingRegional.from_authorized_plan(
-                            authorized,
-                            sd_model=model,
+                        StableDiffusionProcessingRegional.from_plan(
+                            plan,
+                            sd_model=self.model_provider(),
                             outpath_samples=shared.opts.outdir_samples
                             or shared.opts.outdir_txt2img_samples,
                             outpath_grids=shared.opts.outdir_grids
@@ -294,11 +267,15 @@ class RegionalApi:
                             do_not_save_samples=not request.save_images,
                             do_not_save_grid=not request.save_images,
                             is_api=True,
-                            runtime_installer=installer_factory(),
+                            accepted_issue_codes=frozenset(request.accepted_issue_codes),
+                            accepted_fallbacks=tuple(request.accepted_fallbacks),
                         )
                     ) as regional:
                         processed = processing.process_images(regional)
                         processing.process_extra_images(processed)
+                        authorized = regional.authorized_plan
+                        if authorized is None:
+                            raise RuntimeError("Regional generation completed without authorization")
                         metadata = build_metadata(
                             authorized.plan,
                             selected_engine=authorized.engine.engine_id,

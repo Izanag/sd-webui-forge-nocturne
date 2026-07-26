@@ -5,25 +5,63 @@
     const rounded = (value) => Math.round(value * 1000000) / 1000000;
     let drag = null;
 
+    function canvasSize(svg) {
+        const box = svg.viewBox.baseVal;
+        return {width: box.width || 1, height: box.height || 1};
+    }
+
+    function snapValue(svg, value, axis) {
+        const canvas = svg.closest("#regional_canvas");
+        if (canvas?.dataset.nocturneSnapGrid !== "true") return value;
+        const size = canvasSize(svg);
+        const gridStep = Number(svg.dataset.gridStep || 0);
+        const denominator = axis === "x" ? size.width : size.height;
+        const step = gridStep > 0 ? gridStep / denominator : 0;
+        return step > 0 ? clamp(Math.round(value / step) * step, 0, 1) : value;
+    }
+
+    function fitRegionalCanvas() {
+        const root = typeof gradioApp === "function" ? gradioApp() : document;
+        const canvas = root.querySelector("#regional_canvas");
+        const preview = canvas?.querySelector(".nocturne-layout-preview");
+        const svg = preview?.querySelector("svg");
+        if (!canvas || !preview || !svg || canvas.clientWidth === 0 || canvas.clientHeight === 0) return;
+
+        const size = canvasSize(svg);
+        const zoom = Number(canvas.dataset.nocturneZoom || 100) / 100;
+        const maximumWidth = Math.max(1, canvas.clientWidth - 24);
+        const maximumHeight = Math.max(1, canvas.clientHeight - 24);
+        const baseScale = Math.min(maximumWidth / size.width, maximumHeight / size.height);
+        preview.style.width = `${size.width * baseScale * zoom}px`;
+        preview.style.height = `${size.height * baseScale * zoom}px`;
+        canvas.classList.toggle("nocturne-canvas-zoomed", zoom > 1);
+    }
+
     function canvasPoint(svg, event) {
         const point = svg.createSVGPoint();
         point.x = event.clientX;
         point.y = event.clientY;
         const transformed = point.matrixTransform(svg.getScreenCTM().inverse());
-        return {x: clamp(transformed.x / 1000, 0, 1), y: clamp(transformed.y / 1000, 0, 1)};
+        const size = canvasSize(svg);
+        return {
+            x: snapValue(svg, clamp(transformed.x / size.width, 0, 1), "x"),
+            y: snapValue(svg, clamp(transformed.y / size.height, 0, 1), "y"),
+        };
     }
 
     function polygonPoints(polygon) {
-        return Array.from(polygon.points).map((point) => ({x: point.x / 1000, y: point.y / 1000}));
+        const size = canvasSize(polygon.ownerSVGElement);
+        return Array.from(polygon.points).map((point) => ({x: point.x / size.width, y: point.y / size.height}));
     }
 
     function renderPolygon(polygon, points) {
-        polygon.setAttribute("points", points.map((point) => `${point.x * 1000},${point.y * 1000}`).join(" "));
         const svg = polygon.ownerSVGElement;
+        const size = canvasSize(svg);
+        polygon.setAttribute("points", points.map((point) => `${point.x * size.width},${point.y * size.height}`).join(" "));
         for (const handle of svg.querySelectorAll(`[data-region-id="${polygon.dataset.regionId}"][data-point-index]`)) {
             const point = points[Number(handle.dataset.pointIndex)];
-            handle.setAttribute("cx", point.x * 1000);
-            handle.setAttribute("cy", point.y * 1000);
+            handle.setAttribute("cx", point.x * size.width);
+            handle.setAttribute("cy", point.y * size.height);
         }
     }
 
@@ -44,6 +82,7 @@
         if (!shape) return;
 
         if (shape.tagName.toLowerCase() === "rect") {
+            const size = canvasSize(svg);
             drag = {
                 mode: corner ? "rect-resize" : "rect-move",
                 svg,
@@ -52,10 +91,10 @@
                 corner,
                 start,
                 original: {
-                    x: Number(shape.getAttribute("x")) / 1000,
-                    y: Number(shape.getAttribute("y")) / 1000,
-                    width: Number(shape.getAttribute("width")) / 1000,
-                    height: Number(shape.getAttribute("height")) / 1000,
+                    x: Number(shape.getAttribute("x")) / size.width,
+                    y: Number(shape.getAttribute("y")) / size.height,
+                    width: Number(shape.getAttribute("width")) / size.width,
+                    height: Number(shape.getAttribute("height")) / size.height,
                 },
             };
         } else if (shape.tagName.toLowerCase() === "polygon") {
@@ -78,10 +117,13 @@
 
     function moveRect(point) {
         const {original, shape, corner, start, mode} = drag;
+        const size = canvasSize(drag.svg);
         let {x, y, width, height} = original;
         if (mode === "rect-move") {
             x = clamp(original.x + point.x - start.x, 0, 1 - width);
             y = clamp(original.y + point.y - start.y, 0, 1 - height);
+            x = clamp(snapValue(drag.svg, x, "x"), 0, 1 - width);
+            y = clamp(snapValue(drag.svg, y, "y"), 0, 1 - height);
         } else {
             let left = x;
             let top = y;
@@ -96,10 +138,10 @@
             width = right - left;
             height = bottom - top;
         }
-        shape.setAttribute("x", x * 1000);
-        shape.setAttribute("y", y * 1000);
-        shape.setAttribute("width", width * 1000);
-        shape.setAttribute("height", height * 1000);
+        shape.setAttribute("x", x * size.width);
+        shape.setAttribute("y", y * size.height);
+        shape.setAttribute("width", width * size.width);
+        shape.setAttribute("height", height * size.height);
         const corners = {
             nw: [x, y],
             ne: [x + width, y],
@@ -108,8 +150,8 @@
         };
         for (const handle of drag.svg.querySelectorAll(`[data-region-id="${drag.regionId}"][data-rect-corner]`)) {
             const position = corners[handle.dataset.rectCorner];
-            handle.setAttribute("cx", position[0] * 1000);
-            handle.setAttribute("cy", position[1] * 1000);
+            handle.setAttribute("cx", position[0] * size.width);
+            handle.setAttribute("cy", position[1] * size.height);
         }
     }
 
@@ -145,13 +187,14 @@
 
         let payload;
         if (current.mode.startsWith("rect")) {
+            const size = canvasSize(current.svg);
             payload = {
                 type: "rect",
                 region_id: current.regionId,
-                x: rounded(Number(current.shape.getAttribute("x")) / 1000),
-                y: rounded(Number(current.shape.getAttribute("y")) / 1000),
-                width: rounded(Number(current.shape.getAttribute("width")) / 1000),
-                height: rounded(Number(current.shape.getAttribute("height")) / 1000),
+                x: rounded(Number(current.shape.getAttribute("x")) / size.width),
+                y: rounded(Number(current.shape.getAttribute("y")) / size.height),
+                width: rounded(Number(current.shape.getAttribute("width")) / size.width),
+                height: rounded(Number(current.shape.getAttribute("height")) / size.height),
             };
         } else {
             payload = {
@@ -169,16 +212,35 @@
         else bridge.dispatchEvent(new Event("input", {bubbles: true}));
     }
 
+    function selectRegion(event) {
+        const button = event.target.closest("[data-nocturne-select-region]");
+        if (!button) return;
+        const bridgeRoot = gradioApp().querySelector("#regional_region_selection_bridge");
+        const bridge = bridgeRoot?.matches("textarea, input") ? bridgeRoot : bridgeRoot?.querySelector("textarea, input");
+        if (!bridge) return;
+        bridge.value = button.dataset.nocturneSelectRegion;
+        if (typeof updateInput === "function") updateInput(bridge);
+        else bridge.dispatchEvent(new Event("input", {bubbles: true}));
+    }
+
     onUiLoaded(() => {
         const root = gradioApp();
+        root.addEventListener("click", selectRegion);
         root.addEventListener("pointerdown", beginDrag);
         root.addEventListener("pointermove", moveDrag);
         root.addEventListener("pointerup", commitDrag);
         root.addEventListener("pointercancel", () => {
             drag = null;
         });
+        const canvas = root.querySelector("#regional_canvas");
+        if (canvas) {
+            new ResizeObserver(fitRegionalCanvas).observe(canvas);
+            new MutationObserver(fitRegionalCanvas).observe(canvas, {childList: true, subtree: true});
+            setTimeout(fitRegionalCanvas, 0);
+        }
     });
 
+    window.nocturneFitRegionalCanvas = fitRegionalCanvas;
     window.switch_to_regional = function () {
         const regionalTab = Array.from(gradioApp().querySelectorAll("#tabs button"))
             .find((button) => button.textContent.trim() === "Regional");

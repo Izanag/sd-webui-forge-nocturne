@@ -413,15 +413,71 @@ def _region_color(region_id: UUID) -> str:
     return f"hsl({raw % 360} 72% 55%)"
 
 
+def _region_colors(plan: RegionalGenerationPlan) -> dict[UUID, str]:
+    hues: list[int] = []
+    colors = {}
+    for region in plan.regions:
+        hue = region.id.int % 360
+        while any(min(abs(hue - used), 360 - abs(hue - used)) < 36 for used in hues):
+            hue = (hue + 137) % 360
+        hues.append(hue)
+        colors[region.id] = f"hsl({hue} 72% 55%)"
+    return colors
+
+
+def render_region_table(
+    plan: RegionalGenerationPlan,
+    selected_region_id: str | UUID | None = None,
+) -> str:
+    selected = UUID(str(selected_region_id)) if selected_region_id else None
+    if not plan.regions:
+        return '<div class="nocturne-region-table-empty">No regions yet.</div>'
+
+    colors = _region_colors(plan)
+    rows = []
+    for index, region in enumerate(plan.regions, start=1):
+        region_id = str(region.id)
+        selected_class = " is-selected" if region.id == selected else ""
+        state = "Enabled" if region.enabled else "Disabled"
+        rows.append(
+            f'<tr class="nocturne-region-row{selected_class}">'
+            '<td>'
+            f'<button type="button" data-nocturne-select-region="{region_id}" '
+            f'style="--region-color:{colors[region.id]}" '
+            f'aria-pressed="{"true" if region.id == selected else "false"}">'
+            '<span class="nocturne-region-swatch"></span>'
+            f'<span class="nocturne-region-index">{index}</span>'
+            f'<span class="nocturne-region-name">{escape(region.name)}</span>'
+            f'<span class="nocturne-region-state">{state}</span>'
+            "</button>"
+            "</td>"
+            "</tr>"
+        )
+    return (
+        '<div class="nocturne-region-table-wrap">'
+        '<table class="nocturne-region-table" aria-label="Regions"><tbody>'
+        + "".join(rows)
+        + "</tbody></table></div>"
+    )
+
+
 def render_layout_svg(plan: RegionalGenerationPlan, selected_region_id: str | UUID | None = None) -> str:
     selected = UUID(str(selected_region_id)) if selected_region_id else None
+    canvas_width = float(plan.canvas.width)
+    canvas_height = float(plan.canvas.height)
+    short_side = min(canvas_width, canvas_height)
+    handle_radius = max(5.0, short_side * 0.009)
+    label_size = max(14.0, short_side * 0.024)
+    label_offset_x = max(8.0, canvas_width * 0.012)
+    label_offset_y = max(18.0, canvas_height * 0.028)
     shapes = []
     handles = []
     labels = []
+    colors = _region_colors(plan)
     for region in plan.regions:
         if region.hidden:
             continue
-        color = _region_color(region.id)
+        color = colors[region.id]
         opacity = "0.38" if region.enabled else "0.12"
         stroke_width = "4" if region.id == selected else "2"
         geometry = region.geometry
@@ -431,9 +487,13 @@ def render_layout_svg(plan: RegionalGenerationPlan, selected_region_id: str | UU
             f'class="nocturne-region-shape" data-region-id="{region.id}"'
         )
         if isinstance(geometry, RectGeometry):
+            x = geometry.x * canvas_width
+            y = geometry.y * canvas_height
+            width = geometry.width * canvas_width
+            height = geometry.height * canvas_height
             shapes.append(
-                f'<rect x="{geometry.x * 1000:.4f}" y="{geometry.y * 1000:.4f}" '
-                f'width="{geometry.width * 1000:.4f}" height="{geometry.height * 1000:.4f}" {common}/>'
+                f'<rect x="{x:.4f}" y="{y:.4f}" '
+                f'width="{width:.4f}" height="{height:.4f}" {common}/>'
             )
             if region.id == selected and not region.locked:
                 corners = (
@@ -443,42 +503,64 @@ def render_layout_svg(plan: RegionalGenerationPlan, selected_region_id: str | UU
                     ("se", geometry.x + geometry.width, geometry.y + geometry.height),
                 )
                 handles.extend(
-                    f'<circle cx="{x * 1000:.4f}" cy="{y * 1000:.4f}" r="9" '
+                    f'<circle cx="{x * canvas_width:.4f}" cy="{y * canvas_height:.4f}" r="{handle_radius:.4f}" '
                     f'fill="{color}" stroke="white" stroke-width="3" vector-effect="non-scaling-stroke" '
                     f'class="nocturne-geometry-handle" data-region-id="{region.id}" data-rect-corner="{corner}"/>'
                     for corner, x, y in corners
                 )
-            label_x = geometry.x * 1000 + 12
-            label_y = geometry.y * 1000 + 28
+            label_x = x + label_offset_x
+            label_y = y + label_offset_y
         elif isinstance(geometry, PolygonGeometry):
-            points = " ".join(f"{point.x * 1000:.4f},{point.y * 1000:.4f}" for point in geometry.points)
+            points = " ".join(
+                f"{point.x * canvas_width:.4f},{point.y * canvas_height:.4f}"
+                for point in geometry.points
+            )
             shapes.append(f'<polygon points="{points}" {common}/>')
             if region.id == selected and not region.locked:
                 handles.extend(
-                    f'<circle cx="{point.x * 1000:.4f}" cy="{point.y * 1000:.4f}" r="9" '
+                    f'<circle cx="{point.x * canvas_width:.4f}" cy="{point.y * canvas_height:.4f}" r="{handle_radius:.4f}" '
                     f'fill="{color}" stroke="white" stroke-width="3" vector-effect="non-scaling-stroke" '
                     f'class="nocturne-geometry-handle" data-region-id="{region.id}" data-point-index="{index}"/>'
                     for index, point in enumerate(geometry.points)
                 )
-            label_x = geometry.points[0].x * 1000 + 12
-            label_y = geometry.points[0].y * 1000 + 28
+            label_x = geometry.points[0].x * canvas_width + label_offset_x
+            label_y = geometry.points[0].y * canvas_height + label_offset_y
         else:
-            shapes.append(f'<rect x="0" y="0" width="1000" height="1000" {common} stroke-dasharray="12 8"/>')
-            label_x = 12
-            label_y = 28 + len(labels) * 32
+            shapes.append(
+                f'<rect x="0" y="0" width="{canvas_width:.4f}" height="{canvas_height:.4f}" '
+                f'{common} stroke-dasharray="12 8"/>'
+            )
+            label_x = label_offset_x
+            label_y = label_offset_y + len(labels) * label_size * 1.35
         labels.append(
             f'<text x="{label_x:.4f}" y="{label_y:.4f}" fill="currentColor" '
-            f'font-size="24" font-weight="600">{escape(region.name)}</text>'
+            f'font-size="{label_size:.4f}" font-weight="600">{escape(region.name)}</text>'
         )
 
+    grid_step = max(24.0, short_side / 16)
+    empty_state = (
+        f'<text x="{canvas_width / 2:.4f}" y="{canvas_height / 2:.4f}" '
+        f'fill="currentColor" fill-opacity=".58" font-size="{max(18.0, label_size * 1.2):.4f}" '
+        'font-weight="600" text-anchor="middle" dominant-baseline="middle">'
+        'Add a region to begin</text>'
+        if not plan.regions
+        else ""
+    )
     return (
         '<div class="nocturne-layout-preview" role="img" '
-        'aria-label="Regional layout preview with normalised canvas bounds">'
-        f'<svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" '
-        f'data-selected-region="{selected or ""}">'
-        '<rect x="1" y="1" width="998" height="998" rx="8" fill="var(--block-background-fill)" '
-        'stroke="var(--border-color-primary)" stroke-width="2"/>'
-        '<g>' + "".join(shapes) + "</g><g>" + "".join(handles) + "</g><g class=\"nocturne-region-labels\">" + "".join(labels) + "</g>"
+        'aria-label="Regional layout preview with normalised canvas bounds" '
+        f'style="aspect-ratio:{plan.canvas.width}/{plan.canvas.height}">'
+        f'<svg viewBox="0 0 {canvas_width:.4f} {canvas_height:.4f}" preserveAspectRatio="none" '
+        f'data-selected-region="{selected or ""}" data-grid-step="{grid_step:.4f}">'
+        f'<defs><pattern id="nocturne-grid" width="{grid_step:.4f}" height="{grid_step:.4f}" '
+        f'patternUnits="userSpaceOnUse"><path d="M {grid_step:.4f} 0 L 0 0 0 {grid_step:.4f}" '
+        'fill="none" stroke="currentColor" stroke-opacity=".2" stroke-width="1"/></pattern></defs>'
+        f'<rect x="0" y="0" width="{canvas_width:.4f}" height="{canvas_height:.4f}" '
+        'fill="color-mix(in srgb, var(--block-background-fill) 91%, var(--body-text-color) 9%)"/>'
+        f'<rect x="0" y="0" width="{canvas_width:.4f}" height="{canvas_height:.4f}" '
+        'fill="url(#nocturne-grid)"/>'
+        + empty_state
+        + '<g>' + "".join(shapes) + "</g><g>" + "".join(handles) + "</g><g class=\"nocturne-region-labels\">" + "".join(labels) + "</g>"
         "</svg></div>"
     )
 

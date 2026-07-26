@@ -23,6 +23,7 @@ from modules_nocturne.regional.editor import (
     region_choices,
     render_layout_svg,
     render_mask_preview,
+    render_region_table,
     raster_geometry_image,
     selected_region,
     update_canvas,
@@ -128,6 +129,7 @@ def _snapshot(plan, selected_id, *, status=None, raw_value=None):
         raw_value if raw_value is not None else serialized,
         render_layout_svg(plan, selected),
         gr.update(choices=region_choices(plan), value=selected_value),
+        render_region_table(plan, selected),
     )
     options = plan.engine.options
     plan_controls = (
@@ -241,7 +243,9 @@ def _select_region(plan_json, selected_id):
     selected = str(region.id) if region else None
     return (
         selected,
+        gr.update(value=selected),
         render_layout_svg(plan, selected),
+        render_region_table(plan, selected),
         *_selected_updates(plan, selected, report),
         *_operation_updates(selected),
     )
@@ -333,8 +337,21 @@ def transfer_txt2img_plan(
     )
 
 
+def _loaded_capability_report():
+    from modules.sd_models import FakeInitialModel
+
+    model = getattr(shared, "sd_model", None)
+    if model is None or isinstance(model, FakeInitialModel):
+        return None
+    return capability_service.report(model)
+
+
 def _capability_values():
-    report = capability_service.report(getattr(shared, "sd_model", None))
+    report = _loaded_capability_report()
+    if report is None:
+        return ["auto"], False, (
+            "Model support is checked during generation after Forge loads the selected checkpoint."
+        )
     choices = ["auto", *(engine.engine_id for engine in report.eligible_engines)]
     if report.status == "supported":
         details = f"Adapter: `{report.adapter_id}`. Eligible engines: {', '.join(choices[1:]) or 'none'}."
@@ -347,33 +364,6 @@ def _capability_values():
     )
 
 
-def _capability_controls(current="auto"):
-    report = capability_service.report(getattr(shared, "sd_model", None))
-    choices, interactive, details = _capability_values()
-    if current not in choices:
-        choices = [*choices, current]
-        details += f" Requested engine `{current}` is not currently eligible; the plan was not changed."
-    cost_text, required_fallbacks = _engine_preflight_values(current)
-    return (
-        gr.update(choices=choices, value=current, interactive=interactive),
-        details,
-        gr.update(value=cost_text, visible=bool(cost_text)),
-        gr.update(
-            value=False,
-            visible=bool(required_fallbacks),
-            interactive=bool(required_fallbacks),
-            info="Required before generation can accept: " + "; ".join(required_fallbacks)
-            if required_fallbacks
-            else None,
-        ),
-        (),
-        gr.update(
-            value="Generate" if report.status == "supported" else "Generation unavailable",
-            interactive=report.status == "supported" and not required_fallbacks,
-        ),
-    )
-
-
 def _engine_component_update(current):
     choices, interactive, _ = _capability_values()
     if current not in choices:
@@ -382,8 +372,8 @@ def _engine_component_update(current):
 
 
 def _engine_preflight_values(current):
-    report = capability_service.report(getattr(shared, "sd_model", None))
-    if report.status != "supported":
+    report = _loaded_capability_report()
+    if report is None or report.status != "supported":
         return "", ()
     engines = (
         report.eligible_engines
@@ -409,7 +399,8 @@ def _engine_preflight_values(current):
 
 def _engine_preflight_controls(current):
     cost_text, required_fallbacks = _engine_preflight_values(current)
-    report = capability_service.report(getattr(shared, "sd_model", None))
+    report = _loaded_capability_report()
+    generation_available = report is None or report.status == "supported"
     return (
         gr.update(value=cost_text, visible=bool(cost_text)),
         gr.update(
@@ -420,23 +411,23 @@ def _engine_preflight_controls(current):
             if required_fallbacks
             else None,
         ),
-        (),
+        False,
         gr.update(
-            value="Generate" if report.status == "supported" else "Generation unavailable",
-            interactive=report.status == "supported" and not required_fallbacks,
+            value="Generate" if generation_available else "Generation unavailable",
+            interactive=generation_available and not required_fallbacks,
         ),
     )
 
 
 def _accepted_fallback_controls(current, acknowledged):
     _, required_fallbacks = _engine_preflight_values(current)
-    report = capability_service.report(getattr(shared, "sd_model", None))
-    accepted = required_fallbacks if acknowledged else ()
-    ready = report.status == "supported" and (
+    report = _loaded_capability_report()
+    accepted = bool(acknowledged)
+    ready = (report is None or report.status == "supported") and (
         not required_fallbacks or bool(acknowledged)
     )
     return accepted, gr.update(
-        value="Generate" if report.status == "supported" else "Generation unavailable",
+        value="Generate" if report is None or report.status == "supported" else "Generation unavailable",
         interactive=ready,
     )
 
@@ -452,33 +443,21 @@ def _regional_generate_function(
 
     from modules import processing
     from modules.ui import plaintext_to_html
-    from modules_nocturne.regional.generation import authorize_generation
     from modules_nocturne.regional.processing import StableDiffusionProcessingRegional
     from modules_nocturne.regional.project import build_metadata, save_sidecar
 
     plan = load_valid_editor_plan(plan_json)
-    report = capability_service.report(getattr(shared, "sd_model", None))
-    authorized = authorize_generation(
-        plan,
-        report,
-        accepted_fallbacks=tuple(accepted_fallbacks or ()),
-    )
-    engine = capability_service.engines.get(authorized.engine.engine_id)
-    installer_factory = getattr(engine, "runtime_installer", None)
-    if engine is None or not callable(installer_factory):
-        raise RuntimeError("The selected Regional engine has no runtime installer")
-
     with closing(
-        StableDiffusionProcessingRegional.from_authorized_plan(
-            authorized,
-            sd_model=shared.sd_model,
+        StableDiffusionProcessingRegional.from_plan(
+            plan,
+            sd_model=getattr(shared, "sd_model", None),
             outpath_samples=shared.opts.outdir_samples
             or shared.opts.outdir_txt2img_samples,
             outpath_grids=shared.opts.outdir_grids
             or shared.opts.outdir_txt2img_grids,
             scripts_runner=scripts.scripts_regional,
             script_args=script_args,
-            runtime_installer=installer_factory(),
+            accept_required_fallbacks=bool(accepted_fallbacks),
         )
     ) as regional:
         regional.user = request.username
@@ -486,6 +465,9 @@ def _regional_generate_function(
         if processed is None:
             processed = processing.process_images(regional)
         processing.process_extra_images(processed)
+        authorized = regional.authorized_plan
+        if authorized is None:
+            raise RuntimeError("Regional generation completed without authorization")
         metadata = build_metadata(
             authorized.plan,
             selected_engine=authorized.engine.engine_id,
@@ -551,11 +533,9 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
     initial_json = canonical_json(initial_plan)
     initial_engine_choices, initial_engine_interactive, initial_capability_status = _capability_values()
     initial_cost_warning, initial_required_fallbacks = _engine_preflight_values("auto")
-    initial_capability_report = capability_service.report(
-        getattr(shared, "sd_model", None)
-    )
+    initial_capability_report = _loaded_capability_report()
     initial_generation_available = (
-        initial_capability_report.status == "supported"
+        (initial_capability_report is None or initial_capability_report.status == "supported")
         and not initial_required_fallbacks
     )
 
@@ -563,7 +543,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
         toprow = ui_toprow.Toprow(is_img2img=False, id_part="regional")
         toprow.submit.value = (
             "Generate"
-            if initial_capability_report.status == "supported"
+            if initial_capability_report is None or initial_capability_report.status == "supported"
             else "Generation unavailable"
         )
         toprow.submit.interactive = initial_generation_available
@@ -577,33 +557,113 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         border-radius:0 !important;
                         padding-inline:0 !important;
                     }
-                    #regional_canvas { overflow:auto !important; max-height:42rem; }
-                    #regional_canvas svg { display:block; width:100%; min-height:20rem; touch-action:none; }
+                    #regional_canvas {
+                        display:flex;
+                        align-items:center;
+                        justify-content:center;
+                        overflow:hidden !important;
+                        padding:.75rem;
+                        height:clamp(34rem, 56vh, 64rem);
+                    }
+                    #regional_canvas.nocturne-canvas-zoomed {
+                        align-items:flex-start;
+                        justify-content:flex-start;
+                        overflow:auto !important;
+                    }
+                    #regional_canvas > div,
+                    #regional_canvas > div > .prose {
+                        width:100% !important;
+                        height:100% !important;
+                        max-width:none !important;
+                    }
+                    #regional_canvas > div > .prose {
+                        display:flex !important;
+                        align-items:center;
+                        justify-content:center;
+                    }
+                    #regional_canvas svg {
+                        display:block;
+                        width:100%;
+                        height:100%;
+                        min-height:0;
+                        touch-action:none;
+                    }
                     #regional_canvas .nocturne-layout-preview {
-                        border-radius:var(--radius-lg);
+                        flex:0 0 auto;
                         overflow:hidden;
-                        width:var(--nocturne-canvas-zoom, 100%);
-                        min-width:16rem;
+                        width:min(64rem, 92%);
+                        margin:auto;
+                        max-width:none;
                     }
                     #regional_canvas .nocturne-region-shape[data-region-id] { cursor:move; }
                     #regional_canvas .nocturne-geometry-handle { cursor:crosshair; }
                     #regional_canvas .nocturne-region-labels { pointer-events:none; user-select:none; }
-                    #regional_geometry_pointer_bridge { display:none !important; }
-                    #regional_workspace_status p { margin:.25rem 0; }
+                    #regional_geometry_pointer_bridge,
+                    #regional_region_selection_bridge,
+                    #regional_region_list { display:none !important; }
+                    #regional_region_table .nocturne-region-table-wrap {
+                        max-height:12rem;
+                        overflow:auto;
+                        border:1px solid var(--block-border-color);
+                        border-radius:var(--block-radius);
+                    }
+                    #regional_region_table .nocturne-region-table {
+                        width:100%;
+                        border-collapse:collapse;
+                    }
+                    #regional_region_table td { padding:0; }
+                    #regional_region_table button {
+                        display:grid;
+                        grid-template-columns:.8rem 2rem minmax(0, 1fr) auto;
+                        align-items:center;
+                        gap:.55rem;
+                        width:100%;
+                        padding:.48rem .6rem;
+                        color:var(--body-text-color);
+                        text-align:left;
+                        background:transparent;
+                        border:0;
+                        border-bottom:1px solid var(--block-border-color);
+                        cursor:pointer;
+                    }
+                    #regional_region_table tr:last-child button { border-bottom:0; }
+                    #regional_region_table button:hover { background:var(--block-label-background-fill); }
+                    #regional_region_table .is-selected button {
+                        background:var(--button-secondary-background-fill);
+                        box-shadow:inset .2rem 0 0 var(--region-color, transparent);
+                    }
+                    #regional_region_table .nocturne-region-swatch {
+                        width:.72rem;
+                        height:.72rem;
+                        border-radius:50%;
+                        background:var(--region-color);
+                        box-shadow:0 0 0 1px color-mix(in srgb, var(--region-color) 70%, white);
+                    }
+                    #regional_region_table .nocturne-region-name {
+                        overflow:hidden;
+                        text-overflow:ellipsis;
+                        white-space:nowrap;
+                    }
+                    #regional_region_table .nocturne-region-state {
+                        color:var(--body-text-color-subdued);
+                        font-size:.82em;
+                    }
+                    #regional_region_table .nocturne-region-table-empty {
+                        padding:.65rem;
+                        color:var(--body-text-color-subdued);
+                        border:1px dashed var(--block-border-color);
+                        border-radius:var(--block-radius);
+                    }
+                    #regional_workspace_status { display:none !important; }
                     @media (max-width: 900px) {
                         #regional_editor_layout { flex-direction:column; }
                         #regional_editor_layout > .gradio-column {
                             width:100%;
                             min-width:0 !important;
                         }
-                        #regional_canvas svg { min-height:15rem; }
+                        #regional_canvas { height:clamp(22rem, 55vh, 34rem); }
                     }
                 </style>
-                <section class="nocturne-regional-intro" aria-labelledby="regional_workspace_title">
-                    <h2 id="regional_workspace_title">Regional</h2>
-                    <p>Author prompts and spatial regions in one restorable plan.</p>
-                    <p role="status"><strong>Support is checked against the loaded model.</strong> Validation and mask preview remain available without sampling.</p>
-                </section>
                 """,
                 elem_id="regional_workspace_status",
             )
@@ -616,7 +676,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             selected_region_id = gr.State(None)
             geometry_history = gr.State([])
             geometry_future = gr.State([])
-            accepted_fallbacks = gr.State(())
+            accepted_fallbacks = gr.State(False)
             generation_task = gr.Textbox(
                 value="",
                 visible=False,
@@ -626,6 +686,11 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 value="",
                 container=False,
                 elem_id="regional_geometry_pointer_bridge",
+            )
+            region_selection_bridge = gr.Textbox(
+                value="",
+                container=False,
+                elem_id="regional_region_selection_bridge",
             )
 
             with gr.Row(equal_height=False, elem_id="regional_editor_layout"):
@@ -639,9 +704,12 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                     region_list = gr.Dropdown(
                         choices=[],
                         value=None,
-                        label="Selected region",
-                        info="Enabled regions use a filled marker.",
+                        visible=False,
                         elem_id="regional_region_list",
+                    )
+                    region_table = gr.HTML(
+                        value=render_region_table(initial_plan),
+                        elem_id="regional_region_table",
                     )
                     with gr.Row():
                         add_button = gr.Button("Add", variant="primary", tooltip="Add a region with a new stable ID")
@@ -746,29 +814,32 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         value=render_layout_svg(initial_plan),
                         elem_id="regional_canvas",
                     )
-                    canvas_zoom = gr.Slider(
-                        25,
-                        300,
-                        value=100,
-                        step=5,
-                        label="Canvas zoom (%)",
-                        info="Scroll the canvas to pan. Zoom and pan do not change normalised plan coordinates.",
-                    )
+                    with gr.Row():
+                        canvas_zoom = gr.Slider(
+                            25,
+                            300,
+                            value=100,
+                            step=5,
+                            label="Canvas zoom (%)",
+                            info="Scroll the canvas to pan. Zoom and pan do not change normalised plan coordinates.",
+                            scale=4,
+                        )
+                        snap_to_grid = gr.Checkbox(
+                            label="Snap to grid",
+                            value=False,
+                            info="Snap canvas moves and handles to the visible grid.",
+                            scale=1,
+                        )
                     with gr.Row():
                         canvas_width = gr.Slider(64, 2048, value=1024, step=8, label="Canvas width")
                         canvas_height = gr.Slider(64, 2048, value=1024, step=8, label="Canvas height")
                     with gr.Accordion("Generation controls", open=True):
-                        with gr.Row():
-                            engine_choice = gr.Dropdown(
-                                choices=initial_engine_choices,
-                                value="auto",
-                                label="Regional engine",
-                                interactive=initial_engine_interactive,
-                            )
-                            refresh_capabilities = gr.Button(
-                                "Refresh support",
-                                tooltip="Re-check the loaded model and registered Regional engines",
-                            )
+                        engine_choice = gr.Dropdown(
+                            choices=initial_engine_choices,
+                            value="auto",
+                            label="Regional engine",
+                            interactive=initial_engine_interactive,
+                        )
                         capability_status = gr.Markdown(
                             initial_capability_status,
                             elem_id="regional_capability_status",
@@ -781,11 +852,14 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         fallback_acknowledgement = gr.Checkbox(
                             label="Accept required engine fallbacks",
                             value=False,
-                            visible=bool(initial_required_fallbacks),
-                            interactive=bool(initial_required_fallbacks),
-                            info="Required before generation can accept: " + "; ".join(initial_required_fallbacks)
-                            if initial_required_fallbacks
-                            else None,
+                            visible=bool(initial_required_fallbacks) or initial_capability_report is None,
+                            interactive=bool(initial_required_fallbacks) or initial_capability_report is None,
+                            info=(
+                                "Required before generation can accept: "
+                                + "; ".join(initial_required_fallbacks)
+                                if initial_required_fallbacks
+                                else "Allows compatibility fallbacks if the selected model requires them."
+                            ),
                             elem_id="regional_fallback_acknowledgement",
                         )
                         with gr.Row():
@@ -913,6 +987,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             raw_plan,
             canvas_preview,
             region_list,
+            region_table,
         ]
         full_outputs = [
             *common_outputs,
@@ -989,7 +1064,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 selected_id,
                 lambda plan, selected: (update_global_prompts(plan, positive, negative), selected),
             )
-            return (*result[:8], *result[20:])
+            return (*result[:9], *result[21:])
 
         def canvas_action(plan_json, selected_id, width, height):
             return _mutate(
@@ -1070,6 +1145,28 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 return updated, selected
 
             return _mutate(plan_json, selected_id, mutation)
+
+        def region_text_action(plan_json, selected_id, field, value):
+            snapshot = _mutate(
+                plan_json,
+                selected_id,
+                lambda plan, selected: (
+                    update_region(plan, selected, **{field: value}),
+                    selected,
+                )
+                if selected
+                else (_raise_no_selection()),
+            )
+            state = (
+                snapshot[0],
+                snapshot[1],
+                snapshot[3],
+                snapshot[4],
+                snapshot[5],
+            )
+            if field == "name":
+                return (*state, snapshot[6], snapshot[7], snapshot[8])
+            return state
 
         def rectangle_action(plan_json, selected_id, history, future, x, y, width, height):
             return _mutate_geometry(
@@ -1158,18 +1255,34 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             outputs=full_outputs,
         )
 
-        region_list.input(
+        region_selection_bridge.input(
             _select_region,
-            inputs=[last_valid_plan, region_list],
+            inputs=[last_valid_plan, region_selection_bridge],
             outputs=[
                 selected_region_id,
+                region_list,
                 canvas_preview,
+                region_table,
                 *selected_components,
                 duplicate_button,
                 delete_button,
                 move_up_button,
                 move_down_button,
             ],
+            show_progress=False,
+        )
+        snap_to_grid.input(
+            fn=None,
+            inputs=[snap_to_grid],
+            outputs=[],
+            js="""
+                (enabled) => {
+                    const root = typeof gradioApp === "function" ? gradioApp() : document;
+                    const canvas = root.querySelector("#regional_canvas");
+                    if (canvas) canvas.dataset.nocturneSnapGrid = enabled ? "true" : "false";
+                    return [];
+                }
+            """,
             show_progress=False,
         )
         canvas_zoom.input(
@@ -1180,7 +1293,13 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 (zoom) => {
                     const root = typeof gradioApp === "function" ? gradioApp() : document;
                     const canvas = root.querySelector("#regional_canvas");
-                    if (canvas) canvas.style.setProperty("--nocturne-canvas-zoom", `${zoom}%`);
+                    const preview = canvas?.querySelector(".nocturne-layout-preview");
+                    if (preview) {
+                        canvas.dataset.nocturneZoom = String(zoom);
+                        if (typeof window.nocturneFitRegionalCanvas === "function") {
+                            window.nocturneFitRegionalCanvas();
+                        }
+                    }
                     return [];
                 }
             """,
@@ -1234,27 +1353,14 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             ],
             show_progress=False,
         )
-        refresh_capabilities.click(
-            _capability_controls,
-            inputs=[engine_choice],
-            outputs=[
-                engine_choice,
-                capability_status,
-                engine_cost_warning,
-                fallback_acknowledgement,
-                accepted_fallbacks,
-                toprow.submit,
-            ],
-            show_progress=False,
-        )
+        from modules import call_queue
+
         fallback_acknowledgement.input(
             _accepted_fallback_controls,
             inputs=[engine_choice, fallback_acknowledgement],
             outputs=[accepted_fallbacks, toprow.submit],
             show_progress=False,
         )
-
-        from modules import call_queue
 
         generation_event = dict(
             fn=call_queue.wrap_gradio_gpu_call(
@@ -1280,8 +1386,53 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
         toprow.prompt.submit(**generation_event)
         toprow.submit.click(**generation_event)
 
+        region_name.input(
+            lambda plan, selected, value: region_text_action(plan, selected, "name", value),
+            inputs=[last_valid_plan, selected_region_id, region_name],
+            outputs=[
+                plan_bridge,
+                last_valid_plan,
+                validation_status,
+                plan_hash_display,
+                raw_plan,
+                canvas_preview,
+                region_list,
+                region_table,
+            ],
+            show_progress=False,
+            trigger_mode="always_last",
+        )
+        local_positive.input(
+            lambda plan, selected, value: region_text_action(plan, selected, "positive", value),
+            inputs=[last_valid_plan, selected_region_id, local_positive],
+            outputs=[plan_bridge, last_valid_plan, validation_status, plan_hash_display, raw_plan],
+            show_progress=False,
+            trigger_mode="always_last",
+        )
+        local_negative.input(
+            lambda plan, selected, value: region_text_action(plan, selected, "negative", value),
+            inputs=[last_valid_plan, selected_region_id, local_negative],
+            outputs=[plan_bridge, last_valid_plan, validation_status, plan_hash_display, raw_plan],
+            show_progress=False,
+            trigger_mode="always_last",
+        )
+
         region_inputs = selected_editor_components
-        for component in region_inputs:
+        for component in (
+            region_enabled,
+            region_locked,
+            region_hidden,
+            inherit_positive,
+            inherit_negative,
+            region_weight,
+            region_priority,
+            region_feather,
+            region_grow,
+            guidance_start,
+            guidance_end,
+            seed_mode,
+            seed_offset,
+        ):
             component.input(
                 region_action,
                 inputs=[last_valid_plan, selected_region_id, *region_inputs],

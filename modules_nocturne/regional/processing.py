@@ -8,7 +8,9 @@ from typing import Any, Mapping
 
 from modules import processing, scripts
 from modules_nocturne.regional.errors import PlanError
-from modules_nocturne.regional.generation import AuthorizedRegionalPlan
+from modules_nocturne.regional.capabilities import capability_service
+from modules_nocturne.regional.generation import AuthorizedRegionalPlan, authorize_generation
+from modules_nocturne.regional.model import RegionalGenerationPlan
 from modules_nocturne.regional.project import MetadataBundle, build_metadata
 from modules_nocturne.regional.runtime import RegionalBatchContext, RegionalRuntime, RegionalRuntimeInstaller
 
@@ -31,12 +33,17 @@ _CANONICAL_PROCESSING_FIELDS = frozenset(
 )
 
 
-def forge_fields_from_plan(authorized_plan: AuthorizedRegionalPlan) -> Mapping[str, Any]:
+def forge_fields_from_plan(
+    plan_or_authorized: RegionalGenerationPlan | AuthorizedRegionalPlan,
+) -> Mapping[str, Any]:
     """Translate canonical data once at the Forge processing boundary."""
 
-    if not isinstance(authorized_plan, AuthorizedRegionalPlan):
-        raise TypeError("Regional processing requires an authorized canonical plan")
-    plan = authorized_plan.plan
+    if isinstance(plan_or_authorized, AuthorizedRegionalPlan):
+        plan = plan_or_authorized.plan
+    elif isinstance(plan_or_authorized, RegionalGenerationPlan):
+        plan = plan_or_authorized
+    else:
+        raise TypeError("Regional processing requires a canonical plan")
     options = plan.engine.options
     return MappingProxyType(
         {
@@ -61,9 +68,13 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
     """A contained Regional identity that retains Forge's normal job lifecycle."""
 
     authorized_plan: AuthorizedRegionalPlan | None = field(default=None, repr=False)
+    regional_plan: RegionalGenerationPlan | None = field(default=None, repr=False)
+    accepted_issue_codes: frozenset[str] = field(default_factory=frozenset, repr=False)
+    accepted_fallbacks: tuple[str, ...] = field(default=(), repr=False)
+    accept_required_fallbacks: bool = field(default=False, repr=False)
     runtime_installer: RegionalRuntimeInstaller | None = field(default=None, repr=False)
-    regional_runtime: RegionalRuntime = field(init=False, repr=False)
-    regional_metadata_bundle: MetadataBundle = field(init=False, repr=False)
+    regional_runtime: RegionalRuntime | None = field(default=None, init=False, repr=False)
+    regional_metadata_bundle: MetadataBundle | None = field(default=None, init=False, repr=False)
     regional_engine_runtime_options: Mapping[str, Any] = field(init=False, repr=False)
     regional_final_prompts: list[Any] = field(init=False, repr=False)
     regional_resolved_seeds: list[Any] = field(init=False, repr=False)
@@ -99,11 +110,50 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
             instance.script_args = tuple(script_args)
         return instance
 
+    @classmethod
+    def from_plan(
+        cls,
+        plan: RegionalGenerationPlan,
+        *,
+        accepted_issue_codes: frozenset[str] = frozenset(),
+        accepted_fallbacks: tuple[str, ...] = (),
+        accept_required_fallbacks: bool = False,
+        scripts_runner=None,
+        script_args=(),
+        is_api: bool = False,
+        **forge_fields,
+    ) -> "StableDiffusionProcessingRegional":
+        """Create a job that Forge authorizes after its normal model reload."""
+
+        conflicts = _CANONICAL_PROCESSING_FIELDS.intersection(forge_fields)
+        if conflicts:
+            names = ", ".join(sorted(conflicts))
+            raise TypeError(f"Canonical Regional processing fields cannot be overridden: {names}")
+        instance = cls(
+            **forge_fields_from_plan(plan),
+            **forge_fields,
+            regional_plan=plan,
+            accepted_issue_codes=frozenset(accepted_issue_codes),
+            accepted_fallbacks=tuple(accepted_fallbacks),
+            accept_required_fallbacks=bool(accept_required_fallbacks),
+        )
+        instance.is_api = bool(is_api)
+        if scripts_runner is not None:
+            instance.scripts = scripts_runner
+            instance.script_args = tuple(script_args)
+        return instance
+
     def __post_init__(self):
         super().__post_init__()
-        if not isinstance(self.authorized_plan, AuthorizedRegionalPlan):
-            raise TypeError("Regional processing requires an authorized canonical plan")
-        expected = forge_fields_from_plan(self.authorized_plan)
+        plan = (
+            self.authorized_plan.plan
+            if isinstance(self.authorized_plan, AuthorizedRegionalPlan)
+            else self.regional_plan
+        )
+        if not isinstance(plan, RegionalGenerationPlan):
+            raise TypeError("Regional processing requires a canonical plan")
+        self.regional_plan = plan
+        expected = forge_fields_from_plan(plan)
         mismatches = tuple(
             name
             for name in _CANONICAL_PROCESSING_FIELDS
@@ -121,7 +171,6 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
                 "$.passes.hires",
                 "Hires processing is unavailable until the active Regional adapter proves pass support",
             )
-        self.regional_runtime = RegionalRuntime(self.authorized_plan)
         self.regional_final_prompts = []
         self.regional_resolved_seeds = []
         from modules import shared
@@ -137,30 +186,77 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
                 )
             }
         )
+        if self.authorized_plan is not None:
+            self._initialize_authorized_runtime()
+
+    def _initialize_authorized_runtime(self) -> None:
+        if self.regional_runtime is not None:
+            return
+        authorized = self.authorized_plan
+        if authorized is None:
+            report = capability_service.report(self.sd_model)
+            accepted_fallbacks = self.accepted_fallbacks
+            if self.accept_required_fallbacks and report.status == "supported":
+                requested = self.regional_plan.engine.requested
+                engines = (
+                    report.eligible_engines
+                    if requested == "auto"
+                    else tuple(
+                        engine
+                        for engine in report.eligible_engines
+                        if engine.engine_id == requested
+                    )
+                )
+                accepted_fallbacks = tuple(
+                    dict.fromkeys(
+                        (
+                            *report.expected_fallbacks,
+                            *(
+                                fallback
+                                for engine in engines
+                                for fallback in engine.expected_fallbacks
+                            ),
+                        )
+                    )
+                )
+            authorized = authorize_generation(
+                self.regional_plan,
+                report,
+                accepted_issue_codes=self.accepted_issue_codes,
+                accepted_fallbacks=accepted_fallbacks,
+            )
+            engine = capability_service.engines.get(authorized.engine.engine_id)
+            installer_factory = getattr(engine, "runtime_installer", None)
+            if engine is None or not callable(installer_factory):
+                raise RuntimeError("The selected Regional engine has no runtime installer")
+            self.authorized_plan = authorized
+            self.runtime_installer = installer_factory()
+
+        self.regional_runtime = RegionalRuntime(authorized)
         self.regional_metadata_bundle = build_metadata(
-            self.authorized_plan.plan,
-            selected_engine=self.authorized_plan.engine.engine_id,
-            engine_version=self.authorized_plan.engine.engine_version,
+            authorized.plan,
+            selected_engine=authorized.engine.engine_id,
+            engine_version=authorized.engine.engine_version,
             engine_runtime_options=self.regional_engine_runtime_options,
-            adapter_id=self.authorized_plan.adapter_id,
-            accepted_fallbacks=self.authorized_plan.accepted_fallbacks,
+            adapter_id=authorized.adapter_id,
+            accepted_fallbacks=authorized.accepted_fallbacks,
         )
         self.extra_generation_params.update(self.regional_metadata_bundle.fields)
         self.extra_generation_params.update(
             {
-                "Nocturne Regional Engine Version": self.authorized_plan.engine.engine_version,
+                "Nocturne Regional Engine Version": authorized.engine.engine_version,
                 "Nocturne Regional Attention Memory Budget": (
                     f"{self.regional_engine_runtime_options['attention_memory_budget_mb']} MiB"
                 ),
             }
         )
-        if self.authorized_plan.engine.cost_warning:
+        if authorized.engine.cost_warning:
             self.extra_generation_params["Nocturne Regional Warnings"] = (
-                self.authorized_plan.engine.cost_warning
+                authorized.engine.cost_warning
             )
-        if self.authorized_plan.accepted_fallbacks:
+        if authorized.accepted_fallbacks:
             self.extra_generation_params["Nocturne Regional Accepted Fallbacks"] = "; ".join(
-                self.authorized_plan.accepted_fallbacks
+                authorized.accepted_fallbacks
             )
 
     def _batch_context(self) -> RegionalBatchContext:
@@ -178,6 +274,9 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         )
 
     def setup_conds(self):
+        self._initialize_authorized_runtime()
+        if self.regional_runtime is None:
+            raise RuntimeError("Regional runtime was not initialized")
         self.regional_runtime.begin_batch(
             self._batch_context(),
             model_context=self.sd_model,
@@ -223,13 +322,15 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
             )
         if self.runtime_installer is None:
             raise RuntimeError("Regional sampling requires a runtime engine installer")
+        if self.regional_runtime is None:
+            raise RuntimeError("Regional runtime was not initialized")
         self.regional_runtime.install_engine(
             installer=self.runtime_installer,
             model_context=self.sd_model,
         )
 
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts):
-        if self.regional_runtime.active_batch is None:
+        if self.regional_runtime is None or self.regional_runtime.active_batch is None:
             raise RuntimeError("Regional sampling requires a prepared batch")
         try:
             result = super().sample(
@@ -254,10 +355,11 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
 
     def close(self):
         runtime_error: BaseException | None = None
-        try:
-            self.regional_runtime.close()
-        except BaseException as error:
-            runtime_error = error
+        if self.regional_runtime is not None:
+            try:
+                self.regional_runtime.close()
+            except BaseException as error:
+                runtime_error = error
         try:
             super().close()
         except BaseException as base_error:
