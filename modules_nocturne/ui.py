@@ -563,7 +563,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         justify-content:center;
                         overflow:hidden !important;
                         padding:.75rem;
-                        height:clamp(34rem, 56vh, 64rem);
+                        height:clamp(22rem, 42vh, 34rem);
                     }
                     #regional_canvas.nocturne-canvas-zoomed {
                         align-items:flex-start;
@@ -598,6 +598,19 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                     #regional_canvas .nocturne-region-shape[data-region-id] { cursor:move; }
                     #regional_canvas .nocturne-geometry-handle { cursor:crosshair; }
                     #regional_canvas .nocturne-region-labels { pointer-events:none; user-select:none; }
+                    #regional_gallery,
+                    #regional_gallery > div {
+                        min-height:clamp(28rem, 48vh, 36rem);
+                    }
+                    #regional_canvas_toolbar {
+                        align-items:center;
+                        justify-content:flex-end;
+                        min-height:2rem;
+                    }
+                    #regional_snap_to_grid {
+                        flex:0 0 auto;
+                        min-width:0;
+                    }
                     #regional_geometry_pointer_bridge,
                     #regional_region_selection_bridge,
                     #regional_region_list { display:none !important; }
@@ -736,6 +749,29 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                             tooltip="Move selected region later",
                         )
 
+                    with gr.Row(elem_id="regional_canvas_toolbar"):
+                        snap_to_grid = gr.Checkbox(
+                            label="Snap to grid",
+                            value=True,
+                            container=False,
+                            elem_id="regional_snap_to_grid",
+                        )
+                    canvas_preview = gr.HTML(
+                        value=render_layout_svg(initial_plan),
+                        elem_id="regional_canvas",
+                    )
+                    canvas_zoom = gr.Slider(
+                        25,
+                        300,
+                        value=100,
+                        step=5,
+                        label="Canvas zoom (%)",
+                        info="Scroll the canvas to pan. Zoom and pan do not change normalised plan coordinates.",
+                    )
+                    with gr.Row():
+                        canvas_width = gr.Slider(64, 2048, value=1024, step=8, label="Canvas width")
+                        canvas_height = gr.Slider(64, 2048, value=1024, step=8, label="Canvas height")
+
                     with gr.Accordion("Selected region", open=True):
                         region_name = gr.Textbox(label="Name", interactive=False)
                         with gr.Row():
@@ -810,36 +846,48 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         )
 
                 with gr.Column(scale=5, min_width=420):
-                    canvas_preview = gr.HTML(
-                        value=render_layout_svg(initial_plan),
-                        elem_id="regional_canvas",
-                    )
-                    with gr.Row():
-                        canvas_zoom = gr.Slider(
-                            25,
-                            300,
-                            value=100,
-                            step=5,
-                            label="Canvas zoom (%)",
-                            info="Scroll the canvas to pan. Zoom and pan do not change normalised plan coordinates.",
-                            scale=4,
-                        )
-                        snap_to_grid = gr.Checkbox(
-                            label="Snap to grid",
-                            value=False,
-                            info="Snap canvas moves and handles to the visible grid.",
-                            scale=1,
-                        )
-                    with gr.Row():
-                        canvas_width = gr.Slider(64, 2048, value=1024, step=8, label="Canvas width")
-                        canvas_height = gr.Slider(64, 2048, value=1024, step=8, label="Canvas height")
+                    with gr.Row(equal_height=False, elem_id="regional_output_row"):
+                        with gr.Column(scale=4, min_width=360):
+                            output_panel = create_output_panel(
+                                "regional",
+                                shared.opts.outdir_txt2img_samples,
+                                toprow,
+                            )
+                        with gr.Column(scale=2, min_width=260, elem_id="regional_output_tools"):
+                            with gr.Row():
+                                validate_button = gr.Button("Validate", variant="secondary")
+                                preview_button = gr.Button("Preview masks", variant="secondary")
+                            validation_status = gr.Markdown(
+                                "✓ Plan is structurally valid.",
+                                elem_id="regional_validation_status",
+                            )
+                            with gr.Accordion("Mask preview", open=False):
+                                mask_preview = gr.Image(
+                                    label="Compiled mask preview",
+                                    type="pil",
+                                    interactive=False,
+                                    height=240,
+                                )
+                                mask_diagnostics = gr.Markdown(
+                                    "Run preview to inspect coverage.",
+                                    elem_id="regional_mask_summary",
+                                )
+                            with gr.Accordion("Scripts", open=False, elem_id="regional_script_container"):
+                                scripts.scripts_regional.prepare_ui()
+                                regional_script_inputs = scripts.scripts_regional.setup_ui(
+                                    elem_id="regional_script_list"
+                                )
+
                     with gr.Accordion("Generation controls", open=True):
-                        engine_choice = gr.Dropdown(
-                            choices=initial_engine_choices,
-                            value="auto",
-                            label="Regional engine",
-                            interactive=initial_engine_interactive,
-                        )
+                        with gr.Row():
+                            engine_choice = gr.Dropdown(
+                                choices=initial_engine_choices,
+                                value="auto",
+                                label="Regional engine",
+                                interactive=initial_engine_interactive,
+                                scale=3,
+                            )
+                            seed = gr.Number(value=-1, precision=0, label="Seed", scale=1)
                         capability_status = gr.Markdown(
                             initial_capability_status,
                             elem_id="regional_capability_status",
@@ -879,29 +927,13 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         with gr.Row():
                             batch_count = gr.Slider(1, 128, value=1, step=1, label="Batch count")
                             batch_size = gr.Slider(1, 8, value=1, step=1, label="Batch size")
-                            seed = gr.Number(value=-1, precision=0, label="Seed")
                         gr.Checkbox(
                             label="Hires / refiner",
                             value=False,
                             interactive=False,
                             info="Unavailable until the active adapter proves pass support.",
                         )
-                    with gr.Row():
-                        validate_button = gr.Button("Validate", variant="secondary")
-                        preview_button = gr.Button("Preview masks", variant="secondary")
-                    validation_status = gr.Markdown("✓ Plan is structurally valid.", elem_id="regional_validation_status")
                     plan_hash_display = gr.Markdown(f"`{plan_hash(initial_plan)}`", label="Plan hash")
-                    with gr.Row():
-                        mask_preview = gr.Image(
-                            label="Compiled mask preview",
-                            type="pil",
-                            interactive=False,
-                            height=320,
-                        )
-                        mask_diagnostics = gr.Markdown(
-                            "Run preview to inspect coverage.",
-                            elem_id="regional_mask_summary",
-                        )
 
                     with gr.Accordion("Advanced plan details", open=False):
                         region_uuid = gr.Markdown("No region selected.", label="Stable region UUID")
@@ -933,18 +965,6 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                             lines=18,
                         )
                         apply_raw_button = gr.Button("Apply canonical plan")
-
-            with gr.Accordion("Scripts", open=False, elem_id="regional_script_container"):
-                scripts.scripts_regional.prepare_ui()
-                regional_script_inputs = scripts.scripts_regional.setup_ui(
-                    elem_id="regional_script_list"
-                )
-
-            output_panel = create_output_panel(
-                "regional",
-                shared.opts.outdir_txt2img_samples,
-                toprow,
-            )
 
         selected_editor_components = [
             region_name,
@@ -1024,6 +1044,36 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             undo_geometry_button,
             redo_geometry_button,
         ]
+        live_state_outputs = [
+            plan_bridge,
+            last_valid_plan,
+            validation_status,
+            plan_hash_display,
+            raw_plan,
+        ]
+        canvas_live_outputs = [*live_state_outputs, canvas_preview]
+        region_live_outputs = [
+            *canvas_live_outputs,
+            region_list,
+            region_table,
+            *geometry_components,
+        ]
+        geometry_live_outputs = [
+            *canvas_live_outputs,
+            geometry_history,
+            geometry_future,
+            undo_geometry_button,
+            redo_geometry_button,
+        ]
+
+        def live_state(snapshot):
+            return snapshot[0], snapshot[1], snapshot[3], snapshot[4], snapshot[5]
+
+        def canvas_live_state(snapshot):
+            return (*live_state(snapshot), snapshot[6])
+
+        def region_live_state(snapshot):
+            return (*canvas_live_state(snapshot), snapshot[7], snapshot[8], *snapshot[37:48])
 
         def add_action(plan_json, selected_id, mode):
             return _mutate(
@@ -1067,14 +1117,15 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             return (*result[:9], *result[21:])
 
         def canvas_action(plan_json, selected_id, width, height):
-            return _mutate(
+            snapshot = _mutate(
                 plan_json,
                 selected_id,
                 lambda plan, selected: (update_canvas(plan, width, height), selected),
             )
+            return canvas_live_state(snapshot)
 
         def generation_action(plan_json, selected_id, sampler_name, scheduler_name, step_count, cfg, count, size, base_seed):
-            return _mutate(
+            snapshot = _mutate(
                 plan_json,
                 selected_id,
                 lambda plan, selected: (
@@ -1091,13 +1142,15 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                     selected,
                 ),
             )
+            return live_state(snapshot)
 
         def engine_action(plan_json, selected_id, requested):
-            return _mutate(
+            snapshot = _mutate(
                 plan_json,
                 selected_id,
                 lambda plan, selected: (update_engine_request(plan, requested), selected),
             )
+            return live_state(snapshot)
 
         def region_action(plan_json, selected_id, *values):
             def mutation(plan, selected):
@@ -1144,7 +1197,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 )
                 return updated, selected
 
-            return _mutate(plan_json, selected_id, mutation)
+            return region_live_state(_mutate(plan_json, selected_id, mutation))
 
         def region_text_action(plan_json, selected_id, field, value):
             snapshot = _mutate(
@@ -1169,7 +1222,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             return state
 
         def rectangle_action(plan_json, selected_id, history, future, x, y, width, height):
-            return _mutate_geometry(
+            result = _mutate_geometry(
                 plan_json,
                 selected_id,
                 history,
@@ -1183,6 +1236,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                     height=float(height),
                 )
             )
+            return (*canvas_live_state(result), *result[-4:])
 
         def polygon_action(plan_json, selected_id, history, future, points):
             return _mutate_geometry(
@@ -1323,7 +1377,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             dimension.input(
                 canvas_action,
                 inputs=[last_valid_plan, selected_region_id, canvas_width, canvas_height],
-                outputs=full_outputs,
+                outputs=canvas_live_outputs,
                 show_progress=False,
                 trigger_mode="always_last",
             )
@@ -1333,14 +1387,14 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             component.input(
                 generation_action,
                 inputs=[last_valid_plan, selected_region_id, *generation_inputs],
-                outputs=full_outputs,
+                outputs=live_state_outputs,
                 show_progress=False,
                 trigger_mode="always_last",
             )
         engine_choice.input(
             engine_action,
             inputs=[last_valid_plan, selected_region_id, engine_choice],
-            outputs=full_outputs,
+            outputs=live_state_outputs,
             show_progress=False,
         ).then(
             _engine_preflight_controls,
@@ -1436,7 +1490,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             component.input(
                 region_action,
                 inputs=[last_valid_plan, selected_region_id, *region_inputs],
-                outputs=full_outputs,
+                outputs=region_live_outputs,
                 show_progress=False,
                 trigger_mode="always_last",
             )
@@ -1452,7 +1506,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                     geometry_future,
                     *rectangle_inputs,
                 ],
-                outputs=geometry_history_outputs,
+                outputs=geometry_live_outputs,
                 show_progress=False,
                 trigger_mode="always_last",
             )

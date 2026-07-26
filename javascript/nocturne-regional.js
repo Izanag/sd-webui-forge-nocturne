@@ -12,7 +12,7 @@
 
     function snapValue(svg, value, axis) {
         const canvas = svg.closest("#regional_canvas");
-        if (canvas?.dataset.nocturneSnapGrid !== "true") return value;
+        if (canvas?.dataset.nocturneSnapGrid === "false") return value;
         const size = canvasSize(svg);
         const gridStep = Number(svg.dataset.gridStep || 0);
         const denominator = axis === "x" ? size.width : size.height;
@@ -234,6 +234,7 @@
         });
         const canvas = root.querySelector("#regional_canvas");
         if (canvas) {
+            canvas.dataset.nocturneSnapGrid = "true";
             new ResizeObserver(fitRegionalCanvas).observe(canvas);
             new MutationObserver(fitRegionalCanvas).observe(canvas, {childList: true, subtree: true});
             setTimeout(fitRegionalCanvas, 0);

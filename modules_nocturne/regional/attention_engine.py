@@ -68,10 +68,11 @@ class AttentionDecompositionEngine:
                     "composition.uncovered_policy",
                 }
             ),
-            expected_fallbacks=(
-                "Regional seed policies do not alter attention-decomposition noise",
+            expected_fallbacks=(),
+            cost_warning=(
+                "Cross-attention is evaluated once per enabled region and can increase runtime and VRAM use. "
+                "Regional seed policies do not alter attention-decomposition noise."
             ),
-            cost_warning="Cross-attention is evaluated once per enabled region and can increase runtime and VRAM use.",
         )
 
     def runtime_installer(
