@@ -440,6 +440,11 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             gr.HTML(
                 """
                 <style>
+                    #tab_regional {
+                        border:0 !important;
+                        border-radius:0 !important;
+                        padding-inline:0 !important;
+                    }
                     #regional_canvas { overflow:auto; max-height:42rem; }
                     #regional_canvas svg { display:block; width:100%; min-height:20rem; touch-action:none; }
                     #regional_canvas .nocturne-layout-preview {
@@ -453,7 +458,14 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                     #regional_canvas .nocturne-region-labels { pointer-events:none; user-select:none; }
                     #regional_geometry_pointer_bridge { display:none !important; }
                     #regional_workspace_status p { margin:.25rem 0; }
-                    @media (max-width: 900px) { #regional_canvas svg { min-height:15rem; } }
+                    @media (max-width: 900px) {
+                        #regional_editor_layout { flex-direction:column; }
+                        #regional_editor_layout > .gradio-column {
+                            width:100%;
+                            min-width:0 !important;
+                        }
+                        #regional_canvas svg { min-height:15rem; }
+                    }
                 </style>
                 <section class="nocturne-regional-intro" aria-labelledby="regional_workspace_title">
                     <h2 id="regional_workspace_title">Regional</h2>
@@ -479,7 +491,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 elem_id="regional_geometry_pointer_bridge",
             )
 
-            with gr.Row(equal_height=False):
+            with gr.Row(equal_height=False, elem_id="regional_editor_layout"):
                 with gr.Column(scale=2, min_width=280):
                     layout_mode = gr.Dropdown(
                         choices=["Grid / Splits", "Rectangle", "Polygon", "Paint Mask"],
