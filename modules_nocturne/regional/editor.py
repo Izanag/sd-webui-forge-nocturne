@@ -496,17 +496,21 @@ def render_layout_svg(plan: RegionalGenerationPlan, selected_region_id: str | UU
                 f'width="{width:.4f}" height="{height:.4f}" {common}/>'
             )
             if region.id == selected and not region.locked:
-                corners = (
+                resize_handles = (
                     ("nw", geometry.x, geometry.y),
+                    ("n", geometry.x + geometry.width / 2, geometry.y),
                     ("ne", geometry.x + geometry.width, geometry.y),
+                    ("e", geometry.x + geometry.width, geometry.y + geometry.height / 2),
                     ("sw", geometry.x, geometry.y + geometry.height),
+                    ("s", geometry.x + geometry.width / 2, geometry.y + geometry.height),
                     ("se", geometry.x + geometry.width, geometry.y + geometry.height),
+                    ("w", geometry.x, geometry.y + geometry.height / 2),
                 )
                 handles.extend(
                     f'<circle cx="{x * canvas_width:.4f}" cy="{y * canvas_height:.4f}" r="{handle_radius:.4f}" '
                     f'fill="{color}" stroke="white" stroke-width="3" vector-effect="non-scaling-stroke" '
-                    f'class="nocturne-geometry-handle" data-region-id="{region.id}" data-rect-corner="{corner}"/>'
-                    for corner, x, y in corners
+                    f'class="nocturne-geometry-handle" data-region-id="{region.id}" data-rect-corner="{direction}"/>'
+                    for direction, x, y in resize_handles
                 )
             label_x = x + label_offset_x
             label_y = y + label_offset_y
@@ -537,7 +541,21 @@ def render_layout_svg(plan: RegionalGenerationPlan, selected_region_id: str | UU
             f'font-size="{label_size:.4f}" font-weight="600">{escape(region.name)}</text>'
         )
 
-    grid_step = max(24.0, short_side / 16)
+    short_axis_divisions = 24
+    if canvas_width >= canvas_height:
+        grid_rows = short_axis_divisions
+        grid_columns = max(
+            3,
+            min(96, round((canvas_width / canvas_height) * short_axis_divisions / 3) * 3),
+        )
+    else:
+        grid_columns = short_axis_divisions
+        grid_rows = max(
+            3,
+            min(96, round((canvas_height / canvas_width) * short_axis_divisions / 3) * 3),
+        )
+    grid_step_x = canvas_width / grid_columns
+    grid_step_y = canvas_height / grid_rows
     empty_state = (
         f'<text x="{canvas_width / 2:.4f}" y="{canvas_height / 2:.4f}" '
         f'fill="currentColor" fill-opacity=".58" font-size="{max(18.0, label_size * 1.2):.4f}" '
@@ -551,9 +569,10 @@ def render_layout_svg(plan: RegionalGenerationPlan, selected_region_id: str | UU
         'aria-label="Regional layout preview with normalised canvas bounds" '
         f'style="aspect-ratio:{plan.canvas.width}/{plan.canvas.height}">'
         f'<svg viewBox="0 0 {canvas_width:.4f} {canvas_height:.4f}" preserveAspectRatio="none" '
-        f'data-selected-region="{selected or ""}" data-grid-step="{grid_step:.4f}">'
-        f'<defs><pattern id="nocturne-grid" width="{grid_step:.4f}" height="{grid_step:.4f}" '
-        f'patternUnits="userSpaceOnUse"><path d="M {grid_step:.4f} 0 L 0 0 0 {grid_step:.4f}" '
+        f'data-selected-region="{selected or ""}" data-grid-columns="{grid_columns}" '
+        f'data-grid-rows="{grid_rows}">'
+        f'<defs><pattern id="nocturne-grid" width="{grid_step_x:.4f}" height="{grid_step_y:.4f}" '
+        f'patternUnits="userSpaceOnUse"><path d="M {grid_step_x:.4f} 0 L 0 0 0 {grid_step_y:.4f}" '
         'fill="none" stroke="currentColor" stroke-opacity=".2" stroke-width="1"/></pattern></defs>'
         f'<rect x="0" y="0" width="{canvas_width:.4f}" height="{canvas_height:.4f}" '
         'fill="color-mix(in srgb, var(--block-background-fill) 91%, var(--body-text-color) 9%)"/>'

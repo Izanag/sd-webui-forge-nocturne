@@ -596,7 +596,15 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         max-width:none;
                     }
                     #regional_canvas .nocturne-region-shape[data-region-id] { cursor:move; }
-                    #regional_canvas .nocturne-geometry-handle { cursor:crosshair; }
+                    #regional_canvas .nocturne-geometry-handle[data-rect-corner="n"],
+                    #regional_canvas .nocturne-geometry-handle[data-rect-corner="s"] { cursor:ns-resize; }
+                    #regional_canvas .nocturne-geometry-handle[data-rect-corner="e"],
+                    #regional_canvas .nocturne-geometry-handle[data-rect-corner="w"] { cursor:ew-resize; }
+                    #regional_canvas .nocturne-geometry-handle[data-rect-corner="nw"],
+                    #regional_canvas .nocturne-geometry-handle[data-rect-corner="se"] { cursor:nwse-resize; }
+                    #regional_canvas .nocturne-geometry-handle[data-rect-corner="ne"],
+                    #regional_canvas .nocturne-geometry-handle[data-rect-corner="sw"] { cursor:nesw-resize; }
+                    #regional_canvas .nocturne-geometry-handle[data-point-index] { cursor:crosshair; }
                     #regional_canvas .nocturne-region-labels { pointer-events:none; user-select:none; }
                     #regional_gallery,
                     #regional_gallery > div {
@@ -1421,7 +1429,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 _regional_generate,
                 extra_outputs=[None, None, "", ""],
             ),
-            _js="submit",
+            _js="submit_regional",
             inputs=[
                 generation_task,
                 last_valid_plan,

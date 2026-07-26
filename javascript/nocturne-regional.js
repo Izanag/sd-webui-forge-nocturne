@@ -13,6 +13,12 @@
     function snapValue(svg, value, axis) {
         const canvas = svg.closest("#regional_canvas");
         if (canvas?.dataset.nocturneSnapGrid === "false") return value;
+        const divisions = Number(
+            axis === "x" ? svg.dataset.gridColumns : svg.dataset.gridRows,
+        );
+        if (divisions > 0) {
+            return clamp(Math.round(value * divisions) / divisions, 0, 1);
+        }
         const size = canvasSize(svg);
         const gridStep = Number(svg.dataset.gridStep || 0);
         const denominator = axis === "x" ? size.width : size.height;
@@ -65,13 +71,44 @@
         }
     }
 
+    function shapeContainsClientPoint(shape, event) {
+        try {
+            const point = shape.ownerSVGElement.createSVGPoint();
+            point.x = event.clientX;
+            point.y = event.clientY;
+            const local = point.matrixTransform(shape.getScreenCTM().inverse());
+            return typeof shape.isPointInFill === "function"
+                ? shape.isPointInFill(local)
+                : shape.getBBox().x <= local.x &&
+                      local.x <= shape.getBBox().x + shape.getBBox().width &&
+                      shape.getBBox().y <= local.y &&
+                      local.y <= shape.getBBox().y + shape.getBBox().height;
+        } catch {
+            return false;
+        }
+    }
+
     function beginDrag(event) {
         const svg = event.target.closest("#regional_canvas svg");
         if (!svg || event.button !== 0) return;
 
-        const target = event.target.closest("[data-region-id]");
+        const selectedRegion = svg.dataset.selectedRegion;
+        const directTarget = event.target.closest("[data-region-id]");
+        const directHandle =
+            directTarget?.classList.contains("nocturne-geometry-handle") &&
+            directTarget.dataset.regionId === selectedRegion
+                ? directTarget
+                : null;
+        const selectedShape = svg.querySelector(
+            `.nocturne-region-shape[data-region-id="${selectedRegion}"]`,
+        );
+        const target =
+            directHandle ||
+            (selectedShape && shapeContainsClientPoint(selectedShape, event)
+                ? selectedShape
+                : null);
         const regionId = target?.dataset.regionId;
-        if (!target || !regionId || regionId !== svg.dataset.selectedRegion) return;
+        if (!target || !regionId) return;
 
         const start = canvasPoint(svg, event);
         const corner = target.dataset.rectCorner;
@@ -144,9 +181,13 @@
         shape.setAttribute("height", height * size.height);
         const corners = {
             nw: [x, y],
+            n: [x + width / 2, y],
             ne: [x + width, y],
+            e: [x + width, y + height / 2],
             sw: [x, y + height],
+            s: [x + width / 2, y + height],
             se: [x + width, y + height],
+            w: [x, y + height / 2],
         };
         for (const handle of drag.svg.querySelectorAll(`[data-region-id="${drag.regionId}"][data-rect-corner]`)) {
             const position = corners[handle.dataset.rectCorner];
@@ -242,6 +283,26 @@
     });
 
     window.nocturneFitRegionalCanvas = fitRegionalCanvas;
+    window.submit_regional = function () {
+        showSubmitButtons("regional", false);
+
+        const id = randomId();
+        localSet("regional_task_id", id);
+        requestProgress(
+            id,
+            gradioApp().getElementById("regional_gallery_container"),
+            gradioApp().getElementById("regional_gallery"),
+            function () {
+                showSubmitButtons("regional", true);
+                localRemove("regional_task_id");
+                showRestoreProgressButton("regional", false);
+            },
+        );
+
+        const result = create_submit_args(arguments);
+        result[0] = id;
+        return result;
+    };
     window.switch_to_regional = function () {
         const regionalTab = Array.from(gradioApp().querySelectorAll("#tabs button"))
             .find((button) => button.textContent.trim() === "Regional");
