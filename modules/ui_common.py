@@ -164,6 +164,7 @@ class OutputPanel:
     infotext: gr.HTML = None
     html_log: gr.HTML = None
     button_upscale: gr.Button = None
+    button_regional: gr.Button = None
 
 
 def create_output_panel(tabname, outdir, toprow=None):
@@ -206,6 +207,11 @@ def create_output_panel(tabname, outdir, toprow=None):
                 }
 
                 if tabname == "txt2img":
+                    res.button_regional = ToolButton(
+                        "R",
+                        elem_id=f"{tabname}_send_to_regional",
+                        tooltip="Send prompt and generation settings to a new empty Regional plan.",
+                    )
                     res.button_upscale = ToolButton("✨", elem_id=f"{tabname}_upscale", tooltip="Create an upscaled version of the current image using hires fix settings.")
 
             open_folder_button.click(

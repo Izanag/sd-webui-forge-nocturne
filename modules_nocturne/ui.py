@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import replace
+import json
 from pathlib import Path
 import tempfile
 from uuid import UUID
@@ -11,31 +12,38 @@ import gradio as gr
 from modules import scripts, sd_samplers, sd_schedulers, shared, ui_toprow
 from modules_nocturne.regional.editor import (
     add_region,
+    apply_geometry_edit,
     delete_region,
     duplicate_region,
+    geometry_edit_between,
     initial_editor_plan,
     load_valid_editor_plan,
     move_region,
+    plan_from_txt2img_settings,
     region_choices,
     render_layout_svg,
     render_mask_preview,
+    raster_geometry_image,
     selected_region,
     update_canvas,
     update_engine_request,
     update_generation_options,
     update_global_prompts,
+    update_polygon_geometry,
+    update_raster_geometry,
+    update_rectangle_geometry,
     update_region,
     validation_markdown,
 )
 from modules_nocturne.regional.capabilities import capability_service
 from modules_nocturne.regional.errors import PlanError, PlanValidationError
-from modules_nocturne.regional.model import SeedMode
+from modules_nocturne.regional.model import PolygonGeometry, RasterMaskGeometry, RectGeometry, SeedMode
 from modules_nocturne.regional.serialization import canonical_json, plan_hash
-from modules_nocturne.regional.project import load_project, save_project
+from modules_nocturne.regional.project import load_project, restore_metadata_file, save_project
 from modules_nocturne.regional.validation import validate_plan
 
 
-def _selected_updates(plan, selected_id):
+def _selected_updates(plan, selected_id, report=None):
     region = selected_region(plan, selected_id)
     interactive = region is not None
     values = (
@@ -57,8 +65,41 @@ def _selected_updates(plan, selected_id):
         region.seed.offset if region else 0,
     )
     updates = [gr.update(value=value, interactive=interactive) for value in values]
+    geometry = region.geometry if region else None
+    geometry_interactive = interactive and not region.locked
+    is_rect = isinstance(geometry, RectGeometry)
+    is_polygon = isinstance(geometry, PolygonGeometry)
+    is_raster = isinstance(geometry, RasterMaskGeometry)
+    geometry_name = (
+        "Rectangle" if is_rect else "Polygon" if is_polygon else "Painted mask" if is_raster else "No geometry selected"
+    )
+    rect_values = (
+        geometry.x if is_rect else 0.0,
+        geometry.y if is_rect else 0.0,
+        geometry.width if is_rect else 0.25,
+        geometry.height if is_rect else 0.25,
+    )
+    polygon_value = (
+        json.dumps([{"x": point.x, "y": point.y} for point in geometry.points], indent=2)
+        if is_polygon
+        else "[]"
+    )
+    report = report or validate_plan(plan)
+    region_index = next((index for index, item in enumerate(plan.regions) if item.id == region.id), None) if region else None
+    region_path = f"$.regions[{region_index}]" if region_index is not None else None
+    relevant_issues = [issue for issue in report.issues if region_path and issue.path.startswith(region_path)]
+    field_status = validation_markdown(type(report)(tuple(relevant_issues))) if relevant_issues else ""
+    geometry_updates = (
+        gr.update(value=f"**Geometry:** {geometry_name}"),
+        *(gr.update(value=value, visible=is_rect, interactive=geometry_interactive and is_rect) for value in rect_values),
+        gr.update(value=polygon_value, visible=is_polygon, interactive=geometry_interactive and is_polygon),
+        gr.update(value=raster_geometry_image(region), visible=is_raster, interactive=geometry_interactive and is_raster),
+        gr.update(visible=is_polygon, interactive=geometry_interactive and is_polygon),
+        gr.update(visible=is_raster, interactive=geometry_interactive and is_raster),
+        gr.update(value=field_status, visible=bool(field_status)),
+    )
     uuid_text = f"`{region.id}`" if region else "No region selected."
-    return (*updates, gr.update(value=uuid_text))
+    return (*updates, *geometry_updates, gr.update(value=uuid_text))
 
 
 def _operation_updates(selected_id):
@@ -103,7 +144,7 @@ def _snapshot(plan, selected_id, *, status=None, raw_value=None):
         gr.update(value=options.get("seed", -1)),
         _engine_component_update(plan.engine.requested),
     )
-    return (*common, *plan_controls, *_selected_updates(plan, selected), *_operation_updates(selected))
+    return (*common, *plan_controls, *_selected_updates(plan, selected, report), *_operation_updates(selected))
 
 
 def _error_snapshot(last_valid_json, selected_id, error, *, raw_value=None):
@@ -138,14 +179,70 @@ def _mutate(last_valid_json, selected_id, mutation):
         return _error_snapshot(last_valid_json, selected_id, error)
 
 
+def _geometry_history_result(snapshot, history, future):
+    return (
+        *snapshot,
+        list(history),
+        list(future),
+        gr.update(interactive=bool(history)),
+        gr.update(interactive=bool(future)),
+    )
+
+
+def _mutate_geometry(last_valid_json, selected_id, history, future, mutation):
+    history = tuple(history or ())
+    future = tuple(future or ())
+    try:
+        plan = load_valid_editor_plan(last_valid_json)
+        selected = UUID(str(selected_id)) if selected_id else None
+        if selected is None:
+            return _raise_no_selection()
+        candidate = mutation(plan, selected)
+        report = validate_plan(candidate)
+        if not report.valid:
+            raise PlanValidationError(report)
+        edit = geometry_edit_between(plan, candidate, selected)
+        if edit.before == edit.after:
+            return _geometry_history_result(_snapshot(candidate, selected), history, future)
+        new_history = (*history, edit)[-100:]
+        return _geometry_history_result(_snapshot(candidate, selected), new_history, ())
+    except (PlanError, TypeError, ValueError) as error:
+        return _geometry_history_result(_error_snapshot(last_valid_json, selected_id, error), history, future)
+
+
+def _undo_geometry(last_valid_json, selected_id, history, future, undo):
+    history = tuple(history or ())
+    future = tuple(future or ())
+    source = history if undo else future
+    try:
+        if not source:
+            raise PlanError("editor.geometry.history_empty", "$.regions", "No geometry edit is available")
+        plan = load_valid_editor_plan(last_valid_json)
+        edit = source[-1]
+        candidate = apply_geometry_edit(plan, edit, undo=undo)
+        report = validate_plan(candidate)
+        if not report.valid:
+            raise PlanValidationError(report)
+        if undo:
+            history = history[:-1]
+            future = (*future, edit)[-100:]
+        else:
+            future = future[:-1]
+            history = (*history, edit)[-100:]
+        return _geometry_history_result(_snapshot(candidate, edit.region_id), history, future)
+    except (PlanError, TypeError, ValueError) as error:
+        return _geometry_history_result(_error_snapshot(last_valid_json, selected_id, error), history, future)
+
+
 def _select_region(plan_json, selected_id):
     plan = load_valid_editor_plan(plan_json)
+    report = validate_plan(plan)
     region = selected_region(plan, selected_id)
     selected = str(region.id) if region else None
     return (
         selected,
         render_layout_svg(plan, selected),
-        *_selected_updates(plan, selected),
+        *_selected_updates(plan, selected, report),
         *_operation_updates(selected),
     )
 
@@ -180,12 +277,60 @@ def _load_project_file(project_path, last_valid_json, selected_id):
         return _error_snapshot(last_valid_json, selected_id, error)
 
 
+def _restore_metadata_source(source_path, last_valid_json, selected_id):
+    try:
+        restored = restore_metadata_file(source_path)
+        report = validate_plan(restored.metadata.plan)
+        if not report.valid:
+            raise PlanValidationError(report)
+        status = (
+            f"✓ Restored the exact canonical plan from {restored.source_kind}. "
+            f"Plan hash: `{plan_hash(restored.metadata.plan)}`"
+        )
+        return _snapshot(restored.metadata.plan, selected_id, status=status)
+    except (OSError, PlanError, TypeError, ValueError) as error:
+        return _error_snapshot(last_valid_json, selected_id, error)
+
+
 def _save_project_file(plan_json):
     plan = load_valid_editor_plan(plan_json)
     directory = Path(tempfile.mkdtemp(prefix="nocturne-project-"))
     destination = directory / "regional.nocturne-region.json"
     save_project(destination, plan)
     return str(destination)
+
+
+def transfer_txt2img_plan(
+    positive,
+    negative,
+    width,
+    height,
+    sampler_name,
+    scheduler_name,
+    step_count,
+    cfg,
+    count,
+    size,
+    base_seed,
+):
+    plan = plan_from_txt2img_settings(
+        positive=positive or "",
+        negative=negative or "",
+        width=int(width),
+        height=int(height),
+        sampler=sampler_name,
+        scheduler=scheduler_name,
+        steps=int(step_count),
+        cfg_scale=float(cfg),
+        batch_count=int(count),
+        batch_size=int(size),
+        seed=int(base_seed),
+    )
+    return _snapshot(
+        plan,
+        None,
+        status="✓ Imported txt2img prompt and generation settings into a new empty Regional plan.",
+    )
 
 
 def _capability_values():
@@ -207,7 +352,21 @@ def _capability_controls(current="auto"):
     if current not in choices:
         choices = [*choices, current]
         details += f" Requested engine `{current}` is not currently eligible; the plan was not changed."
-    return gr.update(choices=choices, value=current, interactive=interactive), details
+    cost_text, required_fallbacks = _engine_preflight_values(current)
+    return (
+        gr.update(choices=choices, value=current, interactive=interactive),
+        details,
+        gr.update(value=cost_text, visible=bool(cost_text)),
+        gr.update(
+            value=False,
+            visible=bool(required_fallbacks),
+            interactive=bool(required_fallbacks),
+            info="Required before generation can accept: " + "; ".join(required_fallbacks)
+            if required_fallbacks
+            else None,
+        ),
+        (),
+    )
 
 
 def _engine_component_update(current):
@@ -217,12 +376,60 @@ def _engine_component_update(current):
     return gr.update(choices=choices, value=current, interactive=interactive)
 
 
+def _engine_preflight_values(current):
+    report = capability_service.report(getattr(shared, "sd_model", None))
+    if report.status != "supported":
+        return "", ()
+    engines = (
+        report.eligible_engines
+        if current == "auto"
+        else tuple(engine for engine in report.eligible_engines if engine.engine_id == current)
+    )
+    cost_warnings = tuple(
+        dict.fromkeys(engine.cost_warning for engine in engines if engine.cost_warning)
+    )
+    required_fallbacks = tuple(
+        dict.fromkeys(
+            (
+                *report.expected_fallbacks,
+                *(fallback for engine in engines for fallback in engine.expected_fallbacks),
+            )
+        )
+    )
+    cost_text = ""
+    if cost_warnings:
+        cost_text = "⚠ **Engine cost warning:** " + " ".join(cost_warnings)
+    return cost_text, required_fallbacks
+
+
+def _engine_preflight_controls(current):
+    cost_text, required_fallbacks = _engine_preflight_values(current)
+    return (
+        gr.update(value=cost_text, visible=bool(cost_text)),
+        gr.update(
+            value=False,
+            visible=bool(required_fallbacks),
+            interactive=bool(required_fallbacks),
+            info="Required before generation can accept: " + "; ".join(required_fallbacks)
+            if required_fallbacks
+            else None,
+        ),
+        (),
+    )
+
+
+def _accepted_fallbacks(current, acknowledged):
+    _, required_fallbacks = _engine_preflight_values(current)
+    return required_fallbacks if acknowledged else ()
+
+
 def create_regional_interface(create_output_panel: Callable, *, head: str | None = None) -> gr.Blocks:
     """Create the canonical-plan Regional authoring workspace."""
 
     initial_plan = initial_editor_plan()
     initial_json = canonical_json(initial_plan)
     initial_engine_choices, initial_engine_interactive, initial_capability_status = _capability_values()
+    initial_cost_warning, initial_required_fallbacks = _engine_preflight_values("auto")
 
     with gr.Blocks(analytics_enabled=False, head=head) as regional_interface:
         toprow = ui_toprow.Toprow(is_img2img=False, id_part="regional")
@@ -233,8 +440,18 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             gr.HTML(
                 """
                 <style>
-                    #regional_canvas svg { display:block; width:100%; min-height:20rem; max-height:34rem; }
-                    #regional_canvas .nocturne-layout-preview { border-radius:var(--radius-lg); overflow:hidden; }
+                    #regional_canvas { overflow:auto; max-height:42rem; }
+                    #regional_canvas svg { display:block; width:100%; min-height:20rem; touch-action:none; }
+                    #regional_canvas .nocturne-layout-preview {
+                        border-radius:var(--radius-lg);
+                        overflow:hidden;
+                        width:var(--nocturne-canvas-zoom, 100%);
+                        min-width:16rem;
+                    }
+                    #regional_canvas .nocturne-region-shape[data-region-id] { cursor:move; }
+                    #regional_canvas .nocturne-geometry-handle { cursor:crosshair; }
+                    #regional_canvas .nocturne-region-labels { pointer-events:none; user-select:none; }
+                    #regional_geometry_pointer_bridge { display:none !important; }
                     #regional_workspace_status p { margin:.25rem 0; }
                     @media (max-width: 900px) { #regional_canvas svg { min-height:15rem; } }
                 </style>
@@ -253,6 +470,14 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             plan_bridge = gr.Textbox(value=initial_json, visible=False, elem_id="regional_plan_bridge")
             last_valid_plan = gr.State(initial_json)
             selected_region_id = gr.State(None)
+            geometry_history = gr.State([])
+            geometry_future = gr.State([])
+            accepted_fallbacks = gr.State(())
+            geometry_pointer_bridge = gr.Textbox(
+                value="",
+                container=False,
+                elem_id="regional_geometry_pointer_bridge",
+            )
 
             with gr.Row(equal_height=False):
                 with gr.Column(scale=2, min_width=280):
@@ -322,6 +547,47 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                                 interactive=False,
                             )
                             seed_offset = gr.Number(value=0, precision=0, label="Seed offset", interactive=False)
+                        with gr.Accordion("Geometry", open=True):
+                            with gr.Row():
+                                geometry_kind = gr.Markdown("**Geometry:** No geometry selected")
+                                undo_geometry_button = gr.Button(
+                                    "Undo geometry",
+                                    interactive=False,
+                                    tooltip="Undo the most recent committed geometry edit",
+                                )
+                                redo_geometry_button = gr.Button(
+                                    "Redo geometry",
+                                    interactive=False,
+                                    tooltip="Redo the most recently undone geometry edit",
+                                )
+                            with gr.Row():
+                                rect_x = gr.Slider(0, 1, value=0, step=0.001, label="X", visible=False)
+                                rect_y = gr.Slider(0, 1, value=0, step=0.001, label="Y", visible=False)
+                            with gr.Row():
+                                rect_width = gr.Slider(0.001, 1, value=0.25, step=0.001, label="Width", visible=False)
+                                rect_height = gr.Slider(0.001, 1, value=0.25, step=0.001, label="Height", visible=False)
+                            polygon_points = gr.Code(
+                                value="[]",
+                                language="json",
+                                label="Normalised polygon points",
+                                lines=10,
+                                visible=False,
+                            )
+                            apply_polygon_button = gr.Button("Apply polygon points", visible=False)
+                            raster_editor = gr.ImageEditor(
+                                label="Painted mask",
+                                type="pil",
+                                image_mode="L",
+                                format="png",
+                                sources=["upload", "clipboard"],
+                                brush=gr.Brush(colors=["#ffffff"], default_color="#ffffff", color_mode="fixed"),
+                                eraser=gr.Eraser(),
+                                layers=False,
+                                canvas_size=(512, 512),
+                                visible=False,
+                            )
+                            apply_raster_button = gr.Button("Apply painted mask", visible=False)
+                            region_field_validation = gr.Markdown("", visible=False)
                         gr.Markdown(
                             "LoRA and extra-network tags affect the whole generation, including tags written in a local prompt."
                         )
@@ -330,6 +596,14 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                     canvas_preview = gr.HTML(
                         value=render_layout_svg(initial_plan),
                         elem_id="regional_canvas",
+                    )
+                    canvas_zoom = gr.Slider(
+                        25,
+                        300,
+                        value=100,
+                        step=5,
+                        label="Canvas zoom (%)",
+                        info="Scroll the canvas to pan. Zoom and pan do not change normalised plan coordinates.",
                     )
                     with gr.Row():
                         canvas_width = gr.Slider(64, 2048, value=1024, step=8, label="Canvas width")
@@ -349,6 +623,21 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         capability_status = gr.Markdown(
                             initial_capability_status,
                             elem_id="regional_capability_status",
+                        )
+                        engine_cost_warning = gr.Markdown(
+                            initial_cost_warning,
+                            visible=bool(initial_cost_warning),
+                            elem_id="regional_engine_cost_warning",
+                        )
+                        fallback_acknowledgement = gr.Checkbox(
+                            label="Accept required engine fallbacks",
+                            value=False,
+                            visible=bool(initial_required_fallbacks),
+                            interactive=bool(initial_required_fallbacks),
+                            info="Required before generation can accept: " + "; ".join(initial_required_fallbacks)
+                            if initial_required_fallbacks
+                            else None,
+                            elem_id="regional_fallback_acknowledgement",
                         )
                         with gr.Row():
                             sampler = gr.Dropdown(
@@ -404,9 +693,16 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                                 label="Saved project",
                                 interactive=False,
                             )
+                            metadata_upload = gr.File(
+                                label="Restore from PNG or sidecar",
+                                file_types=[".png", ".json"],
+                                type="filepath",
+                                file_count="single",
+                            )
                         with gr.Row():
                             load_project_button = gr.Button("Open project")
                             save_project_button = gr.Button("Save project")
+                            restore_metadata_button = gr.Button("Restore metadata")
                         raw_plan = gr.Code(
                             value=initial_json,
                             language="json",
@@ -421,7 +717,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
 
             create_output_panel("regional", shared.opts.outdir_txt2img_samples, toprow)
 
-        selected_components = [
+        selected_editor_components = [
             region_name,
             region_enabled,
             region_locked,
@@ -438,8 +734,21 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             guidance_end,
             seed_mode,
             seed_offset,
+        ]
+        geometry_components = [
+            geometry_kind,
+            rect_x,
+            rect_y,
+            rect_width,
+            rect_height,
+            polygon_points,
+            raster_editor,
+            apply_polygon_button,
+            apply_raster_button,
+            region_field_validation,
             region_uuid,
         ]
+        selected_components = [*selected_editor_components, *geometry_components]
         common_outputs = [
             plan_bridge,
             last_valid_plan,
@@ -477,6 +786,13 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             delete_button,
             move_up_button,
             move_down_button,
+        ]
+        geometry_history_outputs = [
+            *full_outputs,
+            geometry_history,
+            geometry_future,
+            undo_geometry_button,
+            redo_geometry_button,
         ]
 
         def add_action(plan_json, selected_id, mode):
@@ -600,6 +916,79 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
 
             return _mutate(plan_json, selected_id, mutation)
 
+        def rectangle_action(plan_json, selected_id, history, future, x, y, width, height):
+            return _mutate_geometry(
+                plan_json,
+                selected_id,
+                history,
+                future,
+                lambda plan, selected: update_rectangle_geometry(
+                    plan,
+                    selected,
+                    x=float(x),
+                    y=float(y),
+                    width=float(width),
+                    height=float(height),
+                )
+            )
+
+        def polygon_action(plan_json, selected_id, history, future, points):
+            return _mutate_geometry(
+                plan_json,
+                selected_id,
+                history,
+                future,
+                lambda plan, selected: update_polygon_geometry(plan, selected, points),
+            )
+
+        def raster_action(plan_json, selected_id, history, future, editor_value):
+            def mutation(plan, selected):
+                image = editor_value
+                if isinstance(editor_value, dict):
+                    image = editor_value.get("composite")
+                    if image is None:
+                        image = editor_value.get("background")
+                return update_raster_geometry(plan, selected, image)
+
+            return _mutate_geometry(plan_json, selected_id, history, future, mutation)
+
+        def pointer_geometry_action(plan_json, selected_id, history, future, payload):
+            try:
+                if not isinstance(payload, str) or len(payload) > 64 * 1024:
+                    raise PlanError("editor.geometry.pointer.invalid", "$.geometry", "Canvas geometry update is invalid")
+                document = json.loads(payload)
+                if not isinstance(document, dict) or document.get("region_id") != selected_id:
+                    raise PlanError(
+                        "editor.geometry.pointer.selection_mismatch",
+                        "$.geometry",
+                        "Canvas geometry update does not match the selected region",
+                    )
+                geometry_type = document.get("type")
+                if geometry_type == "rect":
+                    mutation = lambda plan, selected: update_rectangle_geometry(
+                        plan,
+                        selected,
+                        x=document.get("x"),
+                        y=document.get("y"),
+                        width=document.get("width"),
+                        height=document.get("height"),
+                    )
+                elif geometry_type == "polygon":
+                    mutation = lambda plan, selected: update_polygon_geometry(
+                        plan,
+                        selected,
+                        document.get("points"),
+                    )
+                else:
+                    raise PlanError("editor.geometry.pointer.unsupported", "$.geometry.type", "Unsupported canvas geometry update")
+                return _mutate_geometry(plan_json, selected_id, history, future, mutation)
+            except (json.JSONDecodeError, PlanError, TypeError, ValueError) as error:
+                return _geometry_history_result(
+                    _error_snapshot(plan_json, selected_id, error),
+                    tuple(history or ()),
+                    tuple(future or ()),
+                )
+
         add_button.click(add_action, inputs=[last_valid_plan, selected_region_id, layout_mode], outputs=full_outputs)
         duplicate_button.click(duplicate_action, inputs=[last_valid_plan, selected_region_id], outputs=full_outputs)
         delete_button.click(delete_action, inputs=[last_valid_plan, selected_region_id], outputs=full_outputs)
@@ -628,6 +1017,20 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             ],
             show_progress=False,
         )
+        canvas_zoom.input(
+            fn=None,
+            inputs=[canvas_zoom],
+            outputs=[],
+            js="""
+                (zoom) => {
+                    const root = typeof gradioApp === "function" ? gradioApp() : document;
+                    const canvas = root.querySelector("#regional_canvas");
+                    if (canvas) canvas.style.setProperty("--nocturne-canvas-zoom", `${zoom}%`);
+                    return [];
+                }
+            """,
+            show_progress=False,
+        )
         toprow.prompt.change(
             prompt_action,
             inputs=[last_valid_plan, selected_region_id, toprow.prompt, toprow.negative_prompt],
@@ -643,44 +1046,127 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             trigger_mode="always_last",
         )
         for dimension in (canvas_width, canvas_height):
-            dimension.release(
+            dimension.input(
                 canvas_action,
                 inputs=[last_valid_plan, selected_region_id, canvas_width, canvas_height],
                 outputs=full_outputs,
                 show_progress=False,
+                trigger_mode="always_last",
             )
 
         generation_inputs = [sampler, scheduler, steps, cfg_scale, batch_count, batch_size, seed]
         for component in generation_inputs:
-            event = component.release if isinstance(component, gr.Slider) else component.input
-            event(
+            component.input(
                 generation_action,
                 inputs=[last_valid_plan, selected_region_id, *generation_inputs],
                 outputs=full_outputs,
                 show_progress=False,
+                trigger_mode="always_last",
             )
         engine_choice.input(
             engine_action,
             inputs=[last_valid_plan, selected_region_id, engine_choice],
             outputs=full_outputs,
             show_progress=False,
+        ).then(
+            _engine_preflight_controls,
+            inputs=[engine_choice],
+            outputs=[engine_cost_warning, fallback_acknowledgement, accepted_fallbacks],
+            show_progress=False,
         )
         refresh_capabilities.click(
             _capability_controls,
             inputs=[engine_choice],
-            outputs=[engine_choice, capability_status],
+            outputs=[
+                engine_choice,
+                capability_status,
+                engine_cost_warning,
+                fallback_acknowledgement,
+                accepted_fallbacks,
+            ],
+            show_progress=False,
+        )
+        fallback_acknowledgement.input(
+            _accepted_fallbacks,
+            inputs=[engine_choice, fallback_acknowledgement],
+            outputs=[accepted_fallbacks],
             show_progress=False,
         )
 
-        region_inputs = selected_components[:-1]
+        region_inputs = selected_editor_components
         for component in region_inputs:
-            event = component.release if isinstance(component, gr.Slider) else component.input
-            event(
+            component.input(
                 region_action,
                 inputs=[last_valid_plan, selected_region_id, *region_inputs],
                 outputs=full_outputs,
                 show_progress=False,
+                trigger_mode="always_last",
             )
+
+        rectangle_inputs = [rect_x, rect_y, rect_width, rect_height]
+        for component in rectangle_inputs:
+            component.input(
+                rectangle_action,
+                inputs=[
+                    last_valid_plan,
+                    selected_region_id,
+                    geometry_history,
+                    geometry_future,
+                    *rectangle_inputs,
+                ],
+                outputs=geometry_history_outputs,
+                show_progress=False,
+                trigger_mode="always_last",
+            )
+        apply_polygon_button.click(
+            polygon_action,
+            inputs=[last_valid_plan, selected_region_id, geometry_history, geometry_future, polygon_points],
+            outputs=geometry_history_outputs,
+            show_progress=False,
+        )
+        apply_raster_button.click(
+            raster_action,
+            inputs=[last_valid_plan, selected_region_id, geometry_history, geometry_future, raster_editor],
+            outputs=geometry_history_outputs,
+            show_progress=False,
+        )
+        geometry_pointer_bridge.input(
+            pointer_geometry_action,
+            inputs=[
+                last_valid_plan,
+                selected_region_id,
+                geometry_history,
+                geometry_future,
+                geometry_pointer_bridge,
+            ],
+            outputs=geometry_history_outputs,
+            show_progress=False,
+            trigger_mode="always_last",
+        )
+        undo_geometry_button.click(
+            lambda plan, selected, history, future: _undo_geometry(
+                plan,
+                selected,
+                history,
+                future,
+                True,
+            ),
+            inputs=[last_valid_plan, selected_region_id, geometry_history, geometry_future],
+            outputs=geometry_history_outputs,
+            show_progress=False,
+        )
+        redo_geometry_button.click(
+            lambda plan, selected, history, future: _undo_geometry(
+                plan,
+                selected,
+                history,
+                future,
+                False,
+            ),
+            inputs=[last_valid_plan, selected_region_id, geometry_history, geometry_future],
+            outputs=geometry_history_outputs,
+            show_progress=False,
+        )
 
         validate_button.click(
             lambda value, selected: _snapshot(load_valid_editor_plan(value), selected),
@@ -703,12 +1189,18 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             inputs=[project_upload, last_valid_plan, selected_region_id],
             outputs=full_outputs,
         )
+        restore_metadata_button.click(
+            _restore_metadata_source,
+            inputs=[metadata_upload, last_valid_plan, selected_region_id],
+            outputs=full_outputs,
+        )
         save_project_button.click(
             _save_project_file,
             inputs=[last_valid_plan],
             outputs=[project_download],
         )
 
+    regional_interface.nocturne_transfer_outputs = full_outputs
     return regional_interface
 
 

@@ -15,6 +15,7 @@ class EngineCapabilities:
     uncovered_policies: frozenset[UncoveredPolicy]
     supported_fields: frozenset[str] = frozenset()
     expected_fallbacks: tuple[str, ...] = ()
+    cost_warning: str | None = None
 
 
 @runtime_checkable

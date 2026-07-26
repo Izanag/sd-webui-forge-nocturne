@@ -30,6 +30,7 @@ class RegionalEngineCapabilityResponse(BaseModel):
     uncovered_policies: list[str]
     supported_fields: list[str]
     expected_fallbacks: list[str]
+    cost_warning: str | None = None
 
 
 class RegionalCapabilityResponse(BaseModel):
@@ -74,6 +75,7 @@ def _capability_response(report: CapabilityReport) -> RegionalCapabilityResponse
                 uncovered_policies=sorted(policy.value for policy in engine.uncovered_policies),
                 supported_fields=sorted(engine.supported_fields),
                 expected_fallbacks=list(engine.expected_fallbacks),
+                cost_warning=engine.cost_warning,
             )
             for engine in report.eligible_engines
         ],

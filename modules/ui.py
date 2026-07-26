@@ -481,6 +481,27 @@ def create_ui():
     scripts.scripts_current = scripts.scripts_regional
     scripts.scripts_regional.initialize_scripts(context=scripts.GenerationContext.REGIONAL)
     regional_interface = nocturne_ui.create_regional_interface(create_output_panel, head=canvas_head)
+    txt2img_sampler_script = scripts.scripts_txt2img.script("Sampler")
+    txt2img_seed_script = scripts.scripts_txt2img.script("Seed")
+    with txt2img_interface:
+        output_panel.button_regional.click(
+            fn=nocturne_ui.transfer_txt2img_plan,
+            inputs=[
+                toprow.prompt,
+                toprow.negative_prompt,
+                width,
+                height,
+                txt2img_sampler_script.sampler_name,
+                txt2img_sampler_script.scheduler,
+                txt2img_sampler_script.steps,
+                cfg_scale,
+                batch_count,
+                batch_size,
+                txt2img_seed_script.seed,
+            ],
+            outputs=regional_interface.nocturne_transfer_outputs,
+            show_progress=False,
+        ).then(fn=None, _js="switch_to_regional")
 
     scripts.scripts_current = scripts.scripts_img2img
     scripts.scripts_img2img.initialize_scripts(is_img2img=True)

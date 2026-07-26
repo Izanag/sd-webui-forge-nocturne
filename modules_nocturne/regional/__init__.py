@@ -54,10 +54,12 @@ from modules_nocturne.regional.forge_prompts import (
 )
 from modules_nocturne.regional.project import (
     MetadataBundle,
+    RestoredMetadataFile,
     RestoredRegionalMetadata,
     build_metadata,
     load_project,
     restore_metadata,
+    restore_metadata_file,
     save_project,
     save_sidecar,
     sidecar_path_for,
@@ -135,6 +137,7 @@ __all__ = [
     "ResolvedSeedPlan",
     "ResolvedSeedBatch",
     "RestoredRegionalMetadata",
+    "RestoredMetadataFile",
     "SeedMode",
     "SeedPolicy",
     "UncoveredPolicy",
@@ -160,6 +163,7 @@ __all__ = [
     "resolve_seed_batch",
     "resolve_seed_plan",
     "restore_metadata",
+    "restore_metadata_file",
     "save_project",
     "save_sidecar",
     "save_plan",

@@ -21,6 +21,7 @@ PROJECT_SUFFIX = ".nocturne-region.json"
 SIDECAR_SUFFIX = ".nocturne.json"
 EMBEDDED_DATA_KEY = "Nocturne Regional Data"
 MAX_DECOMPRESSED_METADATA_BYTES = MAX_JSON_BYTES
+MAX_METADATA_IMAGE_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,12 @@ class RestoredRegionalMetadata:
     adapter_id: str | None
     accepted_fallbacks: tuple[str, ...]
     resolved_seeds: tuple[ResolvedSeedPlan, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RestoredMetadataFile:
+    metadata: RestoredRegionalMetadata
+    source_kind: str
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -286,3 +293,65 @@ def restore_metadata(
         accepted_fallbacks=tuple(fallbacks),
         resolved_seeds=tuple(restored_seed_records),
     )
+
+
+def restore_metadata_file(path: str | Path) -> RestoredMetadataFile:
+    """Restore canonical metadata from a bounded sidecar or PNG text fields."""
+
+    source = Path(path)
+    if not source.is_file():
+        raise PlanError("metadata.input.missing", "$", "Choose a PNG image or Regional sidecar first")
+
+    if source.suffix.lower() == ".json":
+        if source.stat().st_size > MAX_JSON_BYTES:
+            raise PlanError("metadata.input_too_large", "$", f"Metadata sidecar exceeds {MAX_JSON_BYTES} bytes")
+        try:
+            document = json.loads(source.read_bytes())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise PlanError("metadata.invalid_json", "$", "Metadata sidecar is not valid JSON") from error
+        if not isinstance(document, dict):
+            raise PlanError("metadata.object_required", "$", "Metadata sidecar must contain an object")
+        return RestoredMetadataFile(restore_metadata({}, sidecar_document=document), "sidecar")
+
+    if source.suffix.lower() != ".png":
+        raise PlanError("metadata.input.unsupported", "$", "Metadata restoration accepts PNG images or JSON sidecars")
+    if source.stat().st_size > MAX_METADATA_IMAGE_BYTES:
+        raise PlanError("metadata.image.too_large", "$", "PNG metadata source exceeds the 128 MiB safety limit")
+
+    try:
+        from PIL import Image, UnidentifiedImageError
+
+        with Image.open(source) as image:
+            if image.format != "PNG":
+                raise PlanError("metadata.image.unsupported", "$", "Metadata restoration accepts PNG images")
+            fields = {str(key): value for key, value in image.info.items() if isinstance(value, str)}
+    except UnidentifiedImageError as error:
+        raise PlanError("metadata.image.invalid", "$", "The selected file is not a readable PNG image") from error
+    except OSError as error:
+        raise PlanError("metadata.image.invalid", "$", "The selected PNG image could not be read") from error
+    if sum(len(key) + len(value) for key, value in fields.items()) > MAX_JSON_BYTES * 2:
+        raise PlanError("metadata.fields.too_large", "$", "PNG text metadata exceeds the safety limit")
+
+    sidecar_document = None
+    companion = sidecar_path_for(source)
+    if EMBEDDED_DATA_KEY not in fields and companion.is_file():
+        if companion.stat().st_size > MAX_JSON_BYTES:
+            raise PlanError("metadata.input_too_large", "$", f"Metadata sidecar exceeds {MAX_JSON_BYTES} bytes")
+        try:
+            sidecar_document = json.loads(companion.read_bytes())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise PlanError("metadata.invalid_json", "$", "Companion metadata sidecar is not valid JSON") from error
+        if not isinstance(sidecar_document, dict):
+            raise PlanError("metadata.object_required", "$", "Companion metadata sidecar must contain an object")
+
+    if EMBEDDED_DATA_KEY not in fields and sidecar_document is None:
+        if any(key.startswith("Nocturne Regional ") for key in fields):
+            raise PlanError(
+                "metadata.summary_only",
+                "$",
+                "This image contains only a Regional summary; exact geometry cannot be restored without its sidecar",
+            )
+        raise PlanError("metadata.canonical_missing", "$", "This PNG does not contain restorable Regional metadata")
+
+    source_kind = "embedded PNG metadata" if EMBEDDED_DATA_KEY in fields else "companion sidecar"
+    return RestoredMetadataFile(restore_metadata(fields, sidecar_document=sidecar_document), source_kind)

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 from dataclasses import dataclass, replace
 from html import escape
 from io import BytesIO
@@ -23,6 +25,7 @@ from modules_nocturne.regional.model import (
     RasterMaskGeometry,
     RectGeometry,
     Region,
+    RegionGeometryValue,
     RegionalGenerationPlan,
 )
 from modules_nocturne.regional.serialization import canonical_json, load_plan, plan_hash
@@ -38,6 +41,8 @@ DEFAULT_GENERATION_OPTIONS = {
     "seed": -1,
 }
 
+MAX_EDITOR_POLYGON_POINTS = 1024
+
 
 @dataclass(frozen=True, slots=True)
 class EditorValidation:
@@ -48,11 +53,47 @@ class EditorValidation:
     selected_region_id: UUID | None
 
 
+@dataclass(frozen=True, slots=True)
+class GeometryEdit:
+    region_id: UUID
+    before: RegionGeometryValue
+    after: RegionGeometryValue
+
+
 def initial_editor_plan() -> RegionalGenerationPlan:
     return RegionalGenerationPlan(
         canvas=Canvas(width=1024, height=1024),
         global_prompt=GlobalPrompt(),
         engine=EngineSelection(options=DEFAULT_GENERATION_OPTIONS),
+    )
+
+
+def plan_from_txt2img_settings(
+    *,
+    positive: str,
+    negative: str,
+    width: int,
+    height: int,
+    sampler: str,
+    scheduler: str,
+    steps: int,
+    cfg_scale: float,
+    batch_count: int,
+    batch_size: int,
+    seed: int,
+) -> RegionalGenerationPlan:
+    plan = initial_editor_plan()
+    plan = update_global_prompts(plan, positive, negative)
+    plan = update_canvas(plan, width, height)
+    return update_generation_options(
+        plan,
+        sampler=sampler,
+        scheduler=scheduler,
+        steps=steps,
+        cfg_scale=cfg_scale,
+        batch_count=batch_count,
+        batch_size=batch_size,
+        seed=seed,
     )
 
 
@@ -223,6 +264,136 @@ def update_region(plan: RegionalGenerationPlan, region_id: UUID, **changes: Any)
     return replace(plan, regions=tuple(regions))
 
 
+def update_region_geometry(plan: RegionalGenerationPlan, region_id: UUID, geometry: Any) -> RegionalGenerationPlan:
+    index = next((index for index, region in enumerate(plan.regions) if region.id == region_id), None)
+    if index is None:
+        raise PlanError("editor.region.not_found", "$.regions", "Selected region no longer exists")
+    if plan.regions[index].locked:
+        raise PlanError("editor.region.locked", f"$.regions[{index}].geometry", "Unlock the region before editing its geometry")
+    if not isinstance(geometry, (RectGeometry, PolygonGeometry, RasterMaskGeometry)):
+        raise PlanError("editor.geometry.unsupported", f"$.regions[{index}].geometry", "Unsupported region geometry")
+    regions = list(plan.regions)
+    regions[index] = replace(regions[index], geometry=geometry)
+    return replace(plan, regions=tuple(regions))
+
+
+def geometry_edit_between(
+    before_plan: RegionalGenerationPlan,
+    after_plan: RegionalGenerationPlan,
+    region_id: UUID,
+) -> GeometryEdit:
+    before = selected_region(before_plan, region_id)
+    after = selected_region(after_plan, region_id)
+    if before is None or after is None:
+        raise PlanError("editor.geometry.history_region_missing", "$.regions", "Geometry history region no longer exists")
+    return GeometryEdit(region_id=region_id, before=before.geometry, after=after.geometry)
+
+
+def apply_geometry_edit(
+    plan: RegionalGenerationPlan,
+    edit: GeometryEdit,
+    *,
+    undo: bool,
+) -> RegionalGenerationPlan:
+    region = selected_region(plan, edit.region_id)
+    if region is None:
+        raise PlanError("editor.geometry.history_region_missing", "$.regions", "Geometry history region no longer exists")
+    expected = edit.after if undo else edit.before
+    replacement = edit.before if undo else edit.after
+    if region.geometry != expected:
+        raise PlanError(
+            "editor.geometry.history_stale",
+            "$.regions",
+            "Geometry changed outside this history; start a new geometry edit before using undo or redo",
+        )
+    return update_region_geometry(plan, edit.region_id, replacement)
+
+
+def update_rectangle_geometry(
+    plan: RegionalGenerationPlan,
+    region_id: UUID,
+    *,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+) -> RegionalGenerationPlan:
+    current = selected_region(plan, region_id)
+    extra = current.geometry.extra if current and isinstance(current.geometry, RectGeometry) else {}
+    return update_region_geometry(
+        plan,
+        region_id,
+        RectGeometry(x=float(x), y=float(y), width=float(width), height=float(height), extra=extra),
+    )
+
+
+def update_polygon_geometry(
+    plan: RegionalGenerationPlan,
+    region_id: UUID,
+    points_value: str | list[Any] | tuple[Any, ...],
+) -> RegionalGenerationPlan:
+    try:
+        raw_points = json.loads(points_value) if isinstance(points_value, str) else points_value
+    except json.JSONDecodeError as error:
+        raise PlanError("editor.geometry.polygon.invalid_json", "$.geometry.points", "Polygon points must be valid JSON") from error
+    if not isinstance(raw_points, (list, tuple)) or not 3 <= len(raw_points) <= MAX_EDITOR_POLYGON_POINTS:
+        raise PlanError(
+            "editor.geometry.polygon.point_count",
+            "$.geometry.points",
+            f"Polygon points must contain between 3 and {MAX_EDITOR_POLYGON_POINTS} entries",
+        )
+    points = []
+    for index, raw_point in enumerate(raw_points):
+        path = f"$.geometry.points[{index}]"
+        if isinstance(raw_point, dict):
+            raw_x, raw_y = raw_point.get("x"), raw_point.get("y")
+        elif isinstance(raw_point, (list, tuple)) and len(raw_point) == 2:
+            raw_x, raw_y = raw_point
+        else:
+            raise PlanError("editor.geometry.polygon.point_invalid", path, "Each point must contain x and y values")
+        if isinstance(raw_x, bool) or isinstance(raw_y, bool):
+            raise PlanError("editor.geometry.polygon.point_invalid", path, "Point coordinates must be numbers")
+        try:
+            points.append(Point(float(raw_x), float(raw_y)))
+        except (TypeError, ValueError) as error:
+            raise PlanError("editor.geometry.polygon.point_invalid", path, "Point coordinates must be numbers") from error
+    current = selected_region(plan, region_id)
+    extra = current.geometry.extra if current and isinstance(current.geometry, PolygonGeometry) else {}
+    return update_region_geometry(plan, region_id, PolygonGeometry(points=tuple(points), extra=extra))
+
+
+def update_raster_geometry(
+    plan: RegionalGenerationPlan,
+    region_id: UUID,
+    image: Image.Image,
+) -> RegionalGenerationPlan:
+    if not isinstance(image, Image.Image):
+        raise PlanError("editor.geometry.raster.missing", "$.geometry", "Paint or upload a mask before applying it")
+    mask = image.convert("L")
+    stream = BytesIO()
+    mask.save(stream, format="PNG", optimize=True)
+    payload = stream.getvalue()
+    geometry = RasterMaskGeometry(
+        png_base64=base64.b64encode(payload).decode("ascii"),
+        width=mask.width,
+        height=mask.height,
+        sha256=hashlib.sha256(payload).hexdigest(),
+    )
+    return update_region_geometry(plan, region_id, geometry)
+
+
+def raster_geometry_image(region: Region | None) -> Image.Image | None:
+    if region is None or not isinstance(region.geometry, RasterMaskGeometry):
+        return None
+    try:
+        payload = base64.b64decode(region.geometry.png_base64, validate=True)
+        with Image.open(BytesIO(payload)) as source:
+            source.load()
+            return source.convert("L")
+    except (ValueError, OSError) as error:
+        raise PlanError("editor.geometry.raster.decode_failed", "$.geometry", "Stored raster mask could not be decoded") from error
+
+
 def region_choices(plan: RegionalGenerationPlan) -> list[tuple[str, str]]:
     return [
         (f"{'●' if region.enabled else '○'} {region.name}", str(region.id))
@@ -245,6 +416,7 @@ def _region_color(region_id: UUID) -> str:
 def render_layout_svg(plan: RegionalGenerationPlan, selected_region_id: str | UUID | None = None) -> str:
     selected = UUID(str(selected_region_id)) if selected_region_id else None
     shapes = []
+    handles = []
     labels = []
     for region in plan.regions:
         if region.hidden:
@@ -255,18 +427,39 @@ def render_layout_svg(plan: RegionalGenerationPlan, selected_region_id: str | UU
         geometry = region.geometry
         common = (
             f'fill="{color}" fill-opacity="{opacity}" stroke="{color}" '
-            f'stroke-width="{stroke_width}" vector-effect="non-scaling-stroke"'
+            f'stroke-width="{stroke_width}" vector-effect="non-scaling-stroke" '
+            f'class="nocturne-region-shape" data-region-id="{region.id}"'
         )
         if isinstance(geometry, RectGeometry):
             shapes.append(
                 f'<rect x="{geometry.x * 1000:.4f}" y="{geometry.y * 1000:.4f}" '
                 f'width="{geometry.width * 1000:.4f}" height="{geometry.height * 1000:.4f}" {common}/>'
             )
+            if region.id == selected and not region.locked:
+                corners = (
+                    ("nw", geometry.x, geometry.y),
+                    ("ne", geometry.x + geometry.width, geometry.y),
+                    ("sw", geometry.x, geometry.y + geometry.height),
+                    ("se", geometry.x + geometry.width, geometry.y + geometry.height),
+                )
+                handles.extend(
+                    f'<circle cx="{x * 1000:.4f}" cy="{y * 1000:.4f}" r="9" '
+                    f'fill="{color}" stroke="white" stroke-width="3" vector-effect="non-scaling-stroke" '
+                    f'class="nocturne-geometry-handle" data-region-id="{region.id}" data-rect-corner="{corner}"/>'
+                    for corner, x, y in corners
+                )
             label_x = geometry.x * 1000 + 12
             label_y = geometry.y * 1000 + 28
         elif isinstance(geometry, PolygonGeometry):
             points = " ".join(f"{point.x * 1000:.4f},{point.y * 1000:.4f}" for point in geometry.points)
             shapes.append(f'<polygon points="{points}" {common}/>')
+            if region.id == selected and not region.locked:
+                handles.extend(
+                    f'<circle cx="{point.x * 1000:.4f}" cy="{point.y * 1000:.4f}" r="9" '
+                    f'fill="{color}" stroke="white" stroke-width="3" vector-effect="non-scaling-stroke" '
+                    f'class="nocturne-geometry-handle" data-region-id="{region.id}" data-point-index="{index}"/>'
+                    for index, point in enumerate(geometry.points)
+                )
             label_x = geometry.points[0].x * 1000 + 12
             label_y = geometry.points[0].y * 1000 + 28
         else:
@@ -281,10 +474,11 @@ def render_layout_svg(plan: RegionalGenerationPlan, selected_region_id: str | UU
     return (
         '<div class="nocturne-layout-preview" role="img" '
         'aria-label="Regional layout preview with normalised canvas bounds">'
-        '<svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet">'
+        f'<svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet" '
+        f'data-selected-region="{selected or ""}">'
         '<rect x="1" y="1" width="998" height="998" rx="8" fill="var(--block-background-fill)" '
         'stroke="var(--border-color-primary)" stroke-width="2"/>'
-        '<g>' + "".join(shapes) + "</g><g>" + "".join(labels) + "</g>"
+        '<g>' + "".join(shapes) + "</g><g>" + "".join(handles) + "</g><g class=\"nocturne-region-labels\">" + "".join(labels) + "</g>"
         "</svg></div>"
     )
 
