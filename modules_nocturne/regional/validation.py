@@ -30,6 +30,12 @@ MAX_GROW_SHRINK_PX = 512
 MAX_SEED = (1 << 32) - 1
 MIN_SEED_OFFSET = -(1 << 63)
 MAX_SEED_OFFSET = (1 << 63) - 1
+MAX_GENERATION_NAME_LENGTH = 256
+MAX_GENERATION_STEPS = 150
+MAX_BATCH_COUNT = 128
+MAX_BATCH_SIZE = 8
+MIN_CFG_SCALE = 1.0
+MAX_CFG_SCALE = 24.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
@@ -85,6 +91,70 @@ def _polygon_area(points) -> float:
             for index, point in enumerate(points)
         )
     ) / 2.0
+
+
+def _validate_generation_options(plan: RegionalGenerationPlan, issues: list[ValidationIssue]) -> None:
+    options = plan.engine.options
+    for name in ("sampler", "scheduler"):
+        value = options.get(name)
+        if value is not None and (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value) > MAX_GENERATION_NAME_LENGTH
+        ):
+            _issue(
+                issues,
+                f"generation.{name}.invalid",
+                f"$.engine.options.{name}",
+                f"Generation {name} must be a non-empty string of at most {MAX_GENERATION_NAME_LENGTH} characters",
+            )
+
+    integer_ranges = (
+        ("steps", 1, MAX_GENERATION_STEPS),
+        ("batch_count", 1, MAX_BATCH_COUNT),
+        ("batch_size", 1, MAX_BATCH_SIZE),
+    )
+    for name, minimum, maximum in integer_ranges:
+        value = options.get(name)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not minimum <= value <= maximum
+        ):
+            _issue(
+                issues,
+                f"generation.{name}.out_of_range",
+                f"$.engine.options.{name}",
+                f"Generation {name} must be an integer between {minimum} and {maximum}",
+            )
+
+    cfg_scale = options.get("cfg_scale")
+    if cfg_scale is not None and (
+        isinstance(cfg_scale, bool)
+        or not isinstance(cfg_scale, (int, float))
+        or not math.isfinite(float(cfg_scale))
+        or not MIN_CFG_SCALE <= float(cfg_scale) <= MAX_CFG_SCALE
+    ):
+        _issue(
+            issues,
+            "generation.cfg_scale.out_of_range",
+            "$.engine.options.cfg_scale",
+            f"Generation CFG scale must be between {MIN_CFG_SCALE:g} and {MAX_CFG_SCALE:g}",
+        )
+
+    seed = options.get("seed")
+    if seed is not None and (
+        isinstance(seed, bool)
+        or not isinstance(seed, int)
+        or seed < -1
+        or seed > MAX_SEED
+    ):
+        _issue(
+            issues,
+            "generation.seed.out_of_range",
+            "$.engine.options.seed",
+            f"Generation seed must be -1 or between 0 and {MAX_SEED}",
+        )
 
 
 def _validate_raster(
@@ -143,6 +213,8 @@ def validate_plan(
                 f"$.canvas.{field_name}",
                 f"Canvas {field_name} must be between {MIN_CANVAS_DIMENSION} and {MAX_CANVAS_DIMENSION}",
             )
+
+    _validate_generation_options(plan, issues)
 
     enabled_count = sum(region.enabled for region in plan.regions)
     if enabled_count > max_enabled_regions:

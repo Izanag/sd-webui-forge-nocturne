@@ -84,6 +84,12 @@ from modules_nocturne.regional.seeds import (
     resolve_seed_batch,
     resolve_seed_plan,
 )
+from modules_nocturne.regional.runtime import (
+    RegionalBatchCompilation,
+    RegionalBatchContext,
+    RegionalRuntime,
+    RegionalRuntimeInstaller,
+)
 from modules_nocturne.regional.serialization import canonical_json, load_plan, plan_hash, save_plan
 from modules_nocturne.regional.validation import ValidationCapabilities, validate_plan
 
@@ -132,8 +138,12 @@ __all__ = [
     "RegionGeometryValue",
     "RegionMaskDiagnostics",
     "RegionalGenerationPlan",
+    "RegionalBatchCompilation",
+    "RegionalBatchContext",
     "RegionalEngine",
     "RegionalModelAdapter",
+    "RegionalRuntime",
+    "RegionalRuntimeInstaller",
     "ResolvedSeedPlan",
     "ResolvedSeedBatch",
     "RestoredRegionalMetadata",

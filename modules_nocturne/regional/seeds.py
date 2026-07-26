@@ -151,13 +151,17 @@ def resolve_seed_batch(
 def resolve_forge_seed_sequence(
     plan: RegionalGenerationPlan,
     image_seeds: tuple[int, ...] | list[int],
+    *,
+    start_index: int = 0,
 ) -> tuple[ResolvedSeedPlan, ...]:
     """Use Forge's finalized ``all_seeds`` without recreating its random state."""
 
     if not image_seeds:
         raise PlanError("seed.sequence.empty", "$.all_seeds", "Forge seed sequence cannot be empty")
+    if isinstance(start_index, bool) or not isinstance(start_index, int) or start_index < 0:
+        raise PlanError("seed.start_index.invalid", "$.start_index", "Forge seed start index must be non-negative")
     return tuple(
-        _resolve_exact_image_seed(plan, _normalise_seed(seed), index)
+        _resolve_exact_image_seed(plan, _normalise_seed(seed), start_index + index)
         for index, seed in enumerate(image_seeds)
     )
 
