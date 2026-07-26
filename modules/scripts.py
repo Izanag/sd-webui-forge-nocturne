@@ -76,6 +76,7 @@ class Script:
 
     is_txt2img = False
     is_img2img = False
+    is_regional = False
     tabname = None
     generation_context = None
 
@@ -636,9 +637,11 @@ class ScriptRunner:
             script.generation_context = context
             script.is_txt2img = context == GenerationContext.TXT2IMG
             script.is_img2img = legacy_is_img2img
+            script.is_regional = context == GenerationContext.REGIONAL
             script.tabname = context.value
 
-            visibility = script.show(script.is_img2img)
+            show_context = getattr(script, "show_context", None)
+            visibility = show_context(context) if callable(show_context) else script.show(script.is_img2img)
 
             if visibility == AlwaysVisible:
                 self.scripts.append(script)
@@ -749,14 +752,14 @@ class ScriptRunner:
     def prepare_ui(self):
         self.inputs = [None]
 
-    def setup_ui(self):
+    def setup_ui(self, *, elem_id="script_list"):
         all_titles = [wrap_call(script.title, script.filename, "title") or script.filename for script in self.scripts]
         self.title_map = {title.lower(): script for title, script in zip(all_titles, self.scripts)}
         self.titles = [wrap_call(script.title, script.filename, "title") or f"{script.filename} [error]" for script in self.selectable_scripts]
 
         self.setup_ui_for_section(None)
 
-        dropdown = gr.Dropdown(label="Script", elem_id="script_list", choices=["None"] + self.titles, value="None", type="index")
+        dropdown = gr.Dropdown(label="Script", elem_id=elem_id, choices=["None"] + self.titles, value="None", type="index")
         self.inputs[0] = dropdown
 
         self.setup_ui_for_section(None, self.selectable_scripts)
