@@ -1,6 +1,6 @@
 """Canonical Regional generation contracts."""
 
-from modules_nocturne.regional.errors import IssueSeverity, PlanError, ValidationIssue, ValidationReport
+from modules_nocturne.regional.errors import IssueSeverity, PlanError, PlanValidationError, ValidationIssue, ValidationReport
 from modules_nocturne.regional.capabilities import (
     AdapterRegistry,
     CapabilityReport,
@@ -25,11 +25,32 @@ from modules_nocturne.regional.model import (
     RasterMaskGeometry,
     RectGeometry,
     Region,
+    RegionGeometry,
+    RegionGeometryValue,
     RegionalGenerationPlan,
     SeedMode,
     SeedPolicy,
     UncoveredPolicy,
     new_region,
+)
+from modules_nocturne.regional.masks import (
+    CompiledMaskSet,
+    MaskCacheKey,
+    MaskCacheStats,
+    MaskCompilerCache,
+    MaskDiagnostics,
+    RegionMaskDiagnostics,
+    compile_mask_pyramid,
+    compile_masks,
+    mask_cache,
+)
+from modules_nocturne.regional.generation import AuthorizedRegionalPlan, authorize_generation
+from modules_nocturne.regional.forge_prompts import (
+    ForgeExtraNetworkParse,
+    ForgePromptSchedule,
+    ForgeScheduleEntry,
+    parse_forge_extra_networks,
+    resolve_forge_schedules,
 )
 from modules_nocturne.regional.project import (
     MetadataBundle,
@@ -49,15 +70,25 @@ from modules_nocturne.regional.prompts import (
     PromptExpansionContext,
     PromptExpansionService,
     PromptOwner,
+    PromptTokenCounter,
+    PromptTokenUsage,
     compile_prompt_plan,
 )
-from modules_nocturne.regional.seeds import ResolvedSeedPlan, derive_region_seed, resolve_seed_plan
+from modules_nocturne.regional.seeds import (
+    ResolvedSeedBatch,
+    ResolvedSeedPlan,
+    derive_region_seed,
+    resolve_forge_seed_sequence,
+    resolve_seed_batch,
+    resolve_seed_plan,
+)
 from modules_nocturne.regional.serialization import canonical_json, load_plan, plan_hash, save_plan
 from modules_nocturne.regional.validation import ValidationCapabilities, validate_plan
 
 __all__ = [
     "CURRENT_SCHEMA",
     "AdapterRegistry",
+    "AuthorizedRegionalPlan",
     "Canvas",
     "CapabilityReport",
     "CapabilityService",
@@ -72,22 +103,37 @@ __all__ = [
     "GlobalPrompt",
     "GuidanceSchedule",
     "IssueSeverity",
+    "ForgeExtraNetworkParse",
+    "ForgePromptSchedule",
+    "ForgeScheduleEntry",
     "MetadataBundle",
+    "CompiledMaskSet",
+    "MaskCacheKey",
+    "MaskCacheStats",
+    "MaskCompilerCache",
+    "MaskDiagnostics",
     "OverlapPolicy",
     "PassPolicy",
     "PlanError",
+    "PlanValidationError",
     "Point",
     "PolygonGeometry",
     "PromptExpansionContext",
     "PromptExpansionService",
     "PromptOwner",
+    "PromptTokenCounter",
+    "PromptTokenUsage",
     "RasterMaskGeometry",
     "RectGeometry",
     "Region",
+    "RegionGeometry",
+    "RegionGeometryValue",
+    "RegionMaskDiagnostics",
     "RegionalGenerationPlan",
     "RegionalEngine",
     "RegionalModelAdapter",
     "ResolvedSeedPlan",
+    "ResolvedSeedBatch",
     "RestoredRegionalMetadata",
     "SeedMode",
     "SeedPolicy",
@@ -98,12 +144,20 @@ __all__ = [
     "canonical_json",
     "capability_service",
     "build_metadata",
+    "authorize_generation",
     "compile_prompt_plan",
+    "compile_mask_pyramid",
+    "compile_masks",
     "derive_region_seed",
     "load_plan",
     "load_project",
+    "mask_cache",
     "new_region",
     "plan_hash",
+    "parse_forge_extra_networks",
+    "resolve_forge_schedules",
+    "resolve_forge_seed_sequence",
+    "resolve_seed_batch",
     "resolve_seed_plan",
     "restore_metadata",
     "save_project",

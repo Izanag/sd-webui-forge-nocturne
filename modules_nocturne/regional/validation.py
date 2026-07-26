@@ -22,8 +22,11 @@ from modules_nocturne.regional.model import (
 MIN_CANVAS_DIMENSION = 64
 MAX_CANVAS_DIMENSION = 8192
 MAX_REGION_NAME_LENGTH = 128
+MAX_REGION_WEIGHT = 1000
 MAX_RASTER_ENCODED_BYTES = 16 * 1024 * 1024
 MAX_RASTER_PIXELS = 16_777_216
+MAX_FEATHER_PX = 2048
+MAX_GROW_SHRINK_PX = 512
 MAX_SEED = (1 << 32) - 1
 MIN_SEED_OFFSET = -(1 << 63)
 MAX_SEED_OFFSET = (1 << 63) - 1
@@ -166,8 +169,36 @@ def validate_plan(
 
         if not math.isfinite(region.weight) or region.weight <= 0:
             _issue(issues, "region.weight.invalid", f"{path}.weight", "Region weight must be finite and greater than zero")
+        elif region.weight > MAX_REGION_WEIGHT:
+            _issue(
+                issues,
+                "region.weight.limit_exceeded",
+                f"{path}.weight",
+                f"Region weight cannot exceed {MAX_REGION_WEIGHT}",
+            )
         if not math.isfinite(region.feather_px) or region.feather_px < 0:
             _issue(issues, "region.feather.invalid", f"{path}.feather_px", "Feather amount must be finite and non-negative")
+        elif region.feather_px > MAX_FEATHER_PX:
+            _issue(
+                issues,
+                "region.feather.limit_exceeded",
+                f"{path}.feather_px",
+                f"Feather amount cannot exceed {MAX_FEATHER_PX} canvas pixels",
+            )
+        if not math.isfinite(region.grow_shrink_px):
+            _issue(
+                issues,
+                "region.grow_shrink.invalid",
+                f"{path}.grow_shrink_px",
+                "Grow/shrink amount must be finite",
+            )
+        elif abs(region.grow_shrink_px) > MAX_GROW_SHRINK_PX:
+            _issue(
+                issues,
+                "region.grow_shrink.limit_exceeded",
+                f"{path}.grow_shrink_px",
+                f"Grow/shrink amount cannot exceed {MAX_GROW_SHRINK_PX} canvas pixels in either direction",
+            )
         if not (0.0 <= region.guidance.start <= region.guidance.end <= 1.0):
             _issue(
                 issues,

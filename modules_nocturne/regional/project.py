@@ -10,9 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
+from uuid import UUID
 
 from modules_nocturne.regional.errors import PlanError
 from modules_nocturne.regional.model import CURRENT_SCHEMA, RegionalGenerationPlan
+from modules_nocturne.regional.seeds import ResolvedSeedBatch, ResolvedSeedPlan
 from modules_nocturne.regional.serialization import MAX_JSON_BYTES, canonical_json, load_plan, plan_hash, plan_to_dict
 
 PROJECT_SUFFIX = ".nocturne-region.json"
@@ -39,6 +41,7 @@ class RestoredRegionalMetadata:
     selected_engine: str | None
     adapter_id: str | None
     accepted_fallbacks: tuple[str, ...]
+    resolved_seeds: tuple[ResolvedSeedPlan, ...] = ()
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -92,6 +95,7 @@ def _metadata_document(
     selected_engine: str | None,
     adapter_id: str | None,
     accepted_fallbacks: tuple[str, ...],
+    resolved_seeds: tuple[ResolvedSeedPlan, ...],
 ) -> dict[str, Any]:
     return {
         "metadata_schema": "nocturne.regional.metadata/v1",
@@ -101,6 +105,15 @@ def _metadata_document(
         "selected_engine": selected_engine,
         "adapter_id": adapter_id,
         "accepted_fallbacks": list(accepted_fallbacks),
+        "resolved_seeds": [
+            {
+                "requested_base_seed": item.requested_base_seed,
+                "image_seed": item.image_seed,
+                "batch_index": item.batch_index,
+                "region_seeds": {str(region_id): seed for region_id, seed in sorted(item.region_seeds.items(), key=lambda pair: str(pair[0]))},
+            }
+            for item in resolved_seeds
+        ],
         "plan": plan_to_dict(plan),
     }
 
@@ -124,13 +137,18 @@ def build_metadata(
     selected_engine: str | None = None,
     adapter_id: str | None = None,
     accepted_fallbacks: tuple[str, ...] = (),
+    resolved_seeds: ResolvedSeedBatch | tuple[ResolvedSeedPlan, ...] = (),
     embedded_limit_bytes: int = 256 * 1024,
 ) -> MetadataBundle:
+    seed_records = resolved_seeds.images if isinstance(resolved_seeds, ResolvedSeedBatch) else tuple(resolved_seeds)
+    if len(seed_records) > 10_000 or not all(isinstance(item, ResolvedSeedPlan) for item in seed_records):
+        raise PlanError("metadata.resolved_seeds.invalid", "$.resolved_seeds", "Resolved seeds must contain at most 10000 seed records")
     document = _metadata_document(
         plan,
         selected_engine=selected_engine,
         adapter_id=adapter_id,
         accepted_fallbacks=accepted_fallbacks,
+        resolved_seeds=seed_records,
     )
     encoded = base64.b64encode(zlib.compress(_metadata_json(document), level=9)).decode("ascii")
     sidecar_required = len(encoded) > embedded_limit_bytes
@@ -219,10 +237,52 @@ def restore_metadata(
     if adapter_id is not None and not isinstance(adapter_id, str):
         raise PlanError("metadata.adapter.invalid", "$.adapter_id", "Adapter ID must be a string or null")
 
+    raw_seed_records = document.get("resolved_seeds", [])
+    if not isinstance(raw_seed_records, list) or len(raw_seed_records) > 10_000:
+        raise PlanError("metadata.resolved_seeds.invalid", "$.resolved_seeds", "Resolved seeds must be a bounded array")
+    expected_region_ids = {region.id for region in plan.regions}
+    restored_seed_records = []
+    for index, raw_record in enumerate(raw_seed_records):
+        path = f"$.resolved_seeds[{index}]"
+        if not isinstance(raw_record, dict):
+            raise PlanError("metadata.resolved_seed.invalid", path, "Resolved seed record must be an object")
+        integers = {}
+        for name in ("requested_base_seed", "image_seed", "batch_index"):
+            value = raw_record.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise PlanError("metadata.resolved_seed.invalid", f"{path}.{name}", f"{name} must be a non-negative integer")
+            if name != "batch_index" and value > (1 << 32) - 1:
+                raise PlanError(
+                    "metadata.resolved_seed.invalid",
+                    f"{path}.{name}",
+                    f"{name} must be a 32-bit unsigned integer",
+                )
+            integers[name] = value
+        raw_region_seeds = raw_record.get("region_seeds")
+        if not isinstance(raw_region_seeds, dict):
+            raise PlanError("metadata.region_seeds.invalid", f"{path}.region_seeds", "Region seeds must be an object")
+        region_seeds = {}
+        for raw_region_id, seed in raw_region_seeds.items():
+            try:
+                region_id = UUID(raw_region_id)
+            except (TypeError, ValueError) as error:
+                raise PlanError("metadata.region_seed.id_invalid", f"{path}.region_seeds", "Region seed key must be a UUID") from error
+            if isinstance(seed, bool) or not isinstance(seed, int) or not 0 <= seed <= (1 << 32) - 1:
+                raise PlanError("metadata.region_seed.invalid", f"{path}.region_seeds.{raw_region_id}", "Region seed must be a 32-bit unsigned integer")
+            region_seeds[region_id] = seed
+        if set(region_seeds) != expected_region_ids:
+            raise PlanError(
+                "metadata.region_seeds.mismatch",
+                f"{path}.region_seeds",
+                "Resolved region seed IDs do not match the canonical plan",
+            )
+        restored_seed_records.append(ResolvedSeedPlan(region_seeds=region_seeds, **integers))
+
     return RestoredRegionalMetadata(
         plan=plan,
         requested_engine=requested_engine,
         selected_engine=selected_engine,
         adapter_id=adapter_id,
         accepted_fallbacks=tuple(fallbacks),
+        resolved_seeds=tuple(restored_seed_records),
     )

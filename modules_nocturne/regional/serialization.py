@@ -230,6 +230,7 @@ def _parse_region(value: Any, index: int) -> Region:
         "weight",
         "priority",
         "feather_px",
+        "grow_shrink_px",
         "guidance",
         "seed",
     }
@@ -258,6 +259,7 @@ def _parse_region(value: Any, index: int) -> Region:
         weight=_number(document.get("weight"), f"{path}.weight", 1.0),
         priority=_integer(document.get("priority"), f"{path}.priority", 0),
         feather_px=_number(document.get("feather_px"), f"{path}.feather_px", 0.0),
+        grow_shrink_px=_number(document.get("grow_shrink_px"), f"{path}.grow_shrink_px", 0.0),
         guidance=GuidanceSchedule(
             start=_number(guidance_document.get("start"), f"{path}.guidance.start", 0.0),
             end=_number(guidance_document.get("end"), f"{path}.guidance.end", 1.0),
@@ -418,6 +420,7 @@ def plan_to_dict(plan: RegionalGenerationPlan, *, include_transient: bool = True
                     "weight": region.weight,
                     "priority": region.priority,
                     "feather_px": region.feather_px,
+                    "grow_shrink_px": region.grow_shrink_px,
                     "guidance": _merge_extra(
                         region.guidance.extra,
                         {"start": region.guidance.start, "end": region.guidance.end},

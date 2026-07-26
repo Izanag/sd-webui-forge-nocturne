@@ -19,6 +19,31 @@ class PromptExpansionService(Protocol):
     def expand(self, text: str, context: PromptExpansionContext) -> str: ...
 
 
+@dataclass(frozen=True, slots=True)
+class PromptTokenUsage:
+    token_count: int
+    token_limit: int
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.token_count, bool)
+            or isinstance(self.token_limit, bool)
+            or not isinstance(self.token_count, int)
+            or not isinstance(self.token_limit, int)
+            or self.token_count < 0
+            or self.token_limit < 0
+        ):
+            raise ValueError("Prompt token counts must be non-negative")
+
+    @property
+    def truncated_tokens(self) -> int:
+        return max(self.token_count - self.token_limit, 0)
+
+
+class PromptTokenCounter(Protocol):
+    def measure(self, text: str, *, polarity: str) -> PromptTokenUsage: ...
+
+
 class IdentityPromptExpansion:
     def expand(self, text: str, context: PromptExpansionContext) -> str:
         return text
@@ -40,6 +65,8 @@ class CompiledPromptText:
     text: str
     extra_network_effect: str = "global"
     truncation_tokens: int | None = None
+    token_count: int | None = None
+    token_limit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +106,7 @@ def compile_prompt_plan(
     base_seed: int,
     batch_index: int = 0,
     expansion_service: PromptExpansionService | None = None,
+    token_counter: PromptTokenCounter | None = None,
 ) -> CompiledPromptPlan:
     expansion = expansion_service or IdentityPromptExpansion()
 
@@ -100,6 +128,7 @@ def compile_prompt_plan(
                 polarity=polarity,
             ),
         )
+        usage = token_counter.measure(expanded, polarity=polarity) if token_counter is not None else None
         return CompiledPromptText(
             owner=owner,
             polarity=polarity,
@@ -107,6 +136,9 @@ def compile_prompt_plan(
             source_local=local_text,
             inherits_global=inherits_global,
             text=expanded,
+            truncation_tokens=usage.truncated_tokens if usage is not None else None,
+            token_count=usage.token_count if usage is not None else None,
+            token_limit=usage.token_limit if usage is not None else None,
         )
 
     global_owner = PromptOwner(kind="global")

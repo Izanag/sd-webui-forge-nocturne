@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import math
 from types import MappingProxyType
-from typing import Any, Mapping, TypeAlias
+from typing import Any, Mapping, Protocol, TypeAlias, runtime_checkable
 from uuid import UUID, uuid4
 
 CURRENT_SCHEMA = "nocturne.regional/v1"
@@ -130,7 +130,18 @@ class RasterMaskGeometry:
         object.__setattr__(self, "extra", freeze_mapping(self.extra))
 
 
-RegionGeometry: TypeAlias = RectGeometry | PolygonGeometry | RasterMaskGeometry
+@runtime_checkable
+class RegionGeometry(Protocol):
+    """Immutable geometry contract accepted by the mask compiler."""
+
+    @property
+    def type(self) -> str: ...
+
+    @property
+    def extra(self) -> Mapping[str, JsonValue]: ...
+
+
+RegionGeometryValue: TypeAlias = RectGeometry | PolygonGeometry | RasterMaskGeometry
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +175,7 @@ class SeedPolicy:
 class Region:
     id: UUID
     name: str
-    geometry: RegionGeometry
+    geometry: RegionGeometryValue
     enabled: bool = True
     locked: bool = False
     hidden: bool = False
@@ -175,6 +186,7 @@ class Region:
     weight: float = 1.0
     priority: int = 0
     feather_px: float = 0.0
+    grow_shrink_px: float = 0.0
     guidance: GuidanceSchedule = field(default_factory=GuidanceSchedule)
     seed: SeedPolicy = field(default_factory=SeedPolicy)
     extra: Mapping[str, JsonValue] = field(default_factory=dict, repr=False)
@@ -185,6 +197,7 @@ class Region:
         object.__setattr__(self, "weight", normalise_float(self.weight))
         object.__setattr__(self, "priority", int(self.priority))
         object.__setattr__(self, "feather_px", normalise_float(self.feather_px))
+        object.__setattr__(self, "grow_shrink_px", normalise_float(self.grow_shrink_px))
         object.__setattr__(self, "extra", freeze_mapping(self.extra))
 
 
@@ -239,7 +252,7 @@ class RegionalGenerationPlan:
         object.__setattr__(self, "extra", freeze_mapping(self.extra))
 
 
-def new_region(name: str, geometry: RegionGeometry, **kwargs: Any) -> Region:
+def new_region(name: str, geometry: RegionGeometryValue, **kwargs: Any) -> Region:
     """Create a region with a stable random UUID."""
 
     return Region(id=uuid4(), name=name, geometry=geometry, **kwargs)

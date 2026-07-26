@@ -73,3 +73,19 @@ class PlanError(ValueError):
 
     def as_dict(self) -> dict[str, Any]:
         return self.issue.as_dict()
+
+
+class PlanValidationError(PlanError):
+    """Raised when a complete plan fails pre-compilation validation."""
+
+    def __init__(self, report: ValidationReport):
+        first = report.errors[0] if report.errors else ValidationIssue(
+            code="plan.validation_failed",
+            path="$",
+            message="Regional plan validation failed",
+        )
+        super().__init__(first.code, first.path, first.message)
+        self.report = report
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.report.as_dict()

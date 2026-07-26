@@ -49,7 +49,46 @@ class ResolvedSeedPlan:
     region_seeds: Mapping[UUID, int]
 
     def __post_init__(self) -> None:
+        if (
+            isinstance(self.requested_base_seed, bool)
+            or isinstance(self.image_seed, bool)
+            or not isinstance(self.requested_base_seed, int)
+            or not isinstance(self.image_seed, int)
+            or not 0 <= self.requested_base_seed <= MAX_SEED
+            or not 0 <= self.image_seed <= MAX_SEED
+        ):
+            raise ValueError("Resolved image seeds must be 32-bit unsigned integers")
+        if isinstance(self.batch_index, bool) or not isinstance(self.batch_index, int) or self.batch_index < 0:
+            raise ValueError("Resolved batch index must be a non-negative integer")
+        if any(
+            not isinstance(region_id, UUID)
+            or isinstance(seed, bool)
+            or not isinstance(seed, int)
+            or not 0 <= seed <= MAX_SEED
+            for region_id, seed in self.region_seeds.items()
+        ):
+            raise ValueError("Resolved region seeds must map UUIDs to 32-bit unsigned integers")
         object.__setattr__(self, "region_seeds", MappingProxyType(dict(self.region_seeds)))
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedSeedBatch:
+    batch_size: int
+    batch_count: int
+    images: tuple[ResolvedSeedPlan, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "images", tuple(self.images))
+        if (
+            isinstance(self.batch_size, bool)
+            or isinstance(self.batch_count, bool)
+            or not isinstance(self.batch_size, int)
+            or not isinstance(self.batch_count, int)
+            or self.batch_size < 1
+            or self.batch_count < 1
+            or len(self.images) != self.batch_size * self.batch_count
+        ):
+            raise ValueError("Resolved seed batch dimensions must match its image records")
 
 
 def resolve_seed_plan(plan: RegionalGenerationPlan, base_seed: int, batch_index: int = 0) -> ResolvedSeedPlan:
@@ -78,4 +117,56 @@ def resolve_seed_plan(plan: RegionalGenerationPlan, base_seed: int, batch_index:
         image_seed=image_seed,
         batch_index=batch_index,
         region_seeds=region_seeds,
+    )
+
+
+def resolve_seed_batch(
+    plan: RegionalGenerationPlan,
+    base_seed: int,
+    *,
+    batch_size: int,
+    batch_count: int,
+    increment_seed: bool = True,
+) -> ResolvedSeedBatch:
+    """Match Forge's flattened image order after its random seed is resolved."""
+
+    for name, value in (("batch_size", batch_size), ("batch_count", batch_count)):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise PlanError(f"seed.{name}.invalid", f"$.{name}", f"{name} must be a positive integer")
+    image_count = batch_size * batch_count
+    if image_count > 10_000:
+        raise PlanError("seed.batch.too_large", "$", "Seed batch cannot exceed 10000 images")
+    resolved_base = _normalise_seed(base_seed)
+    images = tuple(
+        resolve_seed_plan(plan, resolved_base, image_index if increment_seed else 0)
+        for image_index in range(image_count)
+    )
+    return ResolvedSeedBatch(
+        batch_size=batch_size,
+        batch_count=batch_count,
+        images=images,
+    )
+
+
+def resolve_forge_seed_sequence(
+    plan: RegionalGenerationPlan,
+    image_seeds: tuple[int, ...] | list[int],
+) -> tuple[ResolvedSeedPlan, ...]:
+    """Use Forge's finalized ``all_seeds`` without recreating its random state."""
+
+    if not image_seeds:
+        raise PlanError("seed.sequence.empty", "$.all_seeds", "Forge seed sequence cannot be empty")
+    return tuple(
+        _resolve_exact_image_seed(plan, _normalise_seed(seed), index)
+        for index, seed in enumerate(image_seeds)
+    )
+
+
+def _resolve_exact_image_seed(plan: RegionalGenerationPlan, image_seed: int, batch_index: int) -> ResolvedSeedPlan:
+    resolved = resolve_seed_plan(plan, image_seed, batch_index=0)
+    return ResolvedSeedPlan(
+        requested_base_seed=image_seed,
+        image_seed=resolved.image_seed,
+        batch_index=batch_index,
+        region_seeds=resolved.region_seeds,
     )
