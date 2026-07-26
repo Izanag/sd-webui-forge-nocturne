@@ -1,6 +1,16 @@
 """Canonical Regional generation contracts."""
 
 from modules_nocturne.regional.errors import IssueSeverity, PlanError, ValidationIssue, ValidationReport
+from modules_nocturne.regional.capabilities import (
+    AdapterRegistry,
+    CapabilityReport,
+    CapabilityService,
+    EngineCapabilities,
+    EngineRegistry,
+    RegionalEngine,
+    RegionalModelAdapter,
+    capability_service,
+)
 from modules_nocturne.regional.model import (
     CURRENT_SCHEMA,
     Canvas,
@@ -27,9 +37,14 @@ from modules_nocturne.regional.validation import ValidationCapabilities, validat
 
 __all__ = [
     "CURRENT_SCHEMA",
+    "AdapterRegistry",
     "Canvas",
+    "CapabilityReport",
+    "CapabilityService",
     "Composition",
     "EngineSelection",
+    "EngineCapabilities",
+    "EngineRegistry",
     "GlobalPrompt",
     "GuidanceSchedule",
     "IssueSeverity",
@@ -42,6 +57,8 @@ __all__ = [
     "RectGeometry",
     "Region",
     "RegionalGenerationPlan",
+    "RegionalEngine",
+    "RegionalModelAdapter",
     "ResolvedSeedPlan",
     "SeedMode",
     "SeedPolicy",
@@ -50,6 +67,7 @@ __all__ = [
     "ValidationIssue",
     "ValidationReport",
     "canonical_json",
+    "capability_service",
     "derive_region_seed",
     "load_plan",
     "new_region",
