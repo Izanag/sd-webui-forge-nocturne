@@ -375,6 +375,10 @@ class StableDiffusionProcessing:
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts):
         raise NotImplementedError
 
+    def prepare_sampling_context(self, *, x, noise, conditioning, unconditional_conditioning, pass_name):
+        """Prepare job-specific sampling state after Forge's final model reset."""
+        return None
+
     def close(self):
         self.sampler = None
         self.c = None
@@ -1376,6 +1380,14 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
             self.sd_model.forge_objects = self.sd_model.forge_objects_after_applying_lora.shallow_copy()
             apply_token_merging(self.sd_model, self.get_token_merging_ratio())
 
+            self.prepare_sampling_context(
+                x=x,
+                noise=x,
+                conditioning=conditioning,
+                unconditional_conditioning=unconditional_conditioning,
+                pass_name="base",
+            )
+
             if self.scripts is not None:
                 self.scripts.process_before_every_sampling(self, x=x, noise=x, c=conditioning, uc=unconditional_conditioning)
 
@@ -1539,6 +1551,14 @@ class StableDiffusionProcessingTxt2Img(StableDiffusionProcessing):
 
         self.sd_model.forge_objects = self.sd_model.forge_objects_after_applying_lora.shallow_copy()
         apply_token_merging(self.sd_model, self.get_token_merging_ratio(for_hr=True))
+
+        self.prepare_sampling_context(
+            x=samples,
+            noise=noise,
+            conditioning=self.hr_c,
+            unconditional_conditioning=self.hr_uc,
+            pass_name="hires",
+        )
 
         if self.scripts is not None:
             self.scripts.process_before_every_sampling(self, x=samples, noise=noise, c=self.hr_c, uc=self.hr_uc)
@@ -1906,6 +1926,14 @@ class StableDiffusionProcessingImg2Img(StableDiffusionProcessing):
 
         self.sd_model.forge_objects = self.sd_model.forge_objects_after_applying_lora.shallow_copy()
         apply_token_merging(self.sd_model, self.get_token_merging_ratio())
+
+        self.prepare_sampling_context(
+            x=self.init_latent,
+            noise=x,
+            conditioning=conditioning,
+            unconditional_conditioning=unconditional_conditioning,
+            pass_name="img2img",
+        )
 
         if self.scripts is not None:
             self.scripts.process_before_every_sampling(self, x=self.init_latent, noise=x, c=conditioning, uc=unconditional_conditioning)

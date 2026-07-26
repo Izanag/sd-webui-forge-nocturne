@@ -144,7 +144,6 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         self.regional_runtime.begin_batch(
             self._batch_context(),
             model_context=self.sd_model,
-            installer=self.runtime_installer,
         )
         try:
             result = super().setup_conds()
@@ -165,6 +164,28 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
                 if callable(add_note):
                     add_note(f"Regional cleanup also failed: {cleanup_error}")
             raise
+
+    def prepare_sampling_context(
+        self,
+        *,
+        x,
+        noise,
+        conditioning,
+        unconditional_conditioning,
+        pass_name,
+    ):
+        if pass_name != "base":
+            raise PlanError(
+                "passes.runtime.unsupported",
+                "$.passes",
+                f"Regional processing does not support the {pass_name!r} sampling pass",
+            )
+        if self.runtime_installer is None:
+            raise RuntimeError("Regional sampling requires a runtime engine installer")
+        self.regional_runtime.install_engine(
+            installer=self.runtime_installer,
+            model_context=self.sd_model,
+        )
 
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts):
         if self.regional_runtime.active_batch is None:

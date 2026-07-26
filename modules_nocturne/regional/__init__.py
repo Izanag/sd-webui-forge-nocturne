@@ -7,6 +7,7 @@ from modules_nocturne.regional.capabilities import (
     CapabilityService,
     EngineCapabilities,
     EngineRegistry,
+    InstalledRegionalEngine,
     RegionalEngine,
     RegionalModelAdapter,
     capability_service,
@@ -19,6 +20,12 @@ from modules_nocturne.regional.conditioning import (
     RegionalPromptConditioning,
     WeightedConditioning,
     build_regional_conditioning,
+)
+from modules_nocturne.regional.attention_engine import (
+    AttentionDecompositionEngine,
+    InstalledAttentionDecomposition,
+    SD15AttentionRuntimeInstaller,
+    attention_decomposition_engine,
 )
 from modules_nocturne.regional.model import (
     CURRENT_SCHEMA,
@@ -105,6 +112,7 @@ from modules_nocturne.regional.validation import ValidationCapabilities, validat
 __all__ = [
     "CURRENT_SCHEMA",
     "AdapterRegistry",
+    "AttentionDecompositionEngine",
     "AuthorizedRegionalPlan",
     "Canvas",
     "CapabilityReport",
@@ -120,6 +128,8 @@ __all__ = [
     "GlobalPrompt",
     "GuidanceSchedule",
     "IssueSeverity",
+    "InstalledRegionalEngine",
+    "InstalledAttentionDecomposition",
     "ForgeExtraNetworkParse",
     "ForgePromptSchedule",
     "ForgeScheduleEntry",
@@ -164,6 +174,7 @@ __all__ = [
     "RestoredMetadataFile",
     "SeedMode",
     "SeedPolicy",
+    "SD15AttentionRuntimeInstaller",
     "UncoveredPolicy",
     "ValidationCapabilities",
     "ValidationIssue",
@@ -173,6 +184,7 @@ __all__ = [
     "capability_service",
     "build_metadata",
     "authorize_generation",
+    "attention_decomposition_engine",
     "build_regional_conditioning",
     "compile_prompt_plan",
     "compile_mask_pyramid",

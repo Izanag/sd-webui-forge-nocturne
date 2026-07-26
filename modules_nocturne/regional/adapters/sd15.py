@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from types import MappingProxyType
+from typing import Any, Mapping
 
 from modules_nocturne.regional.errors import PlanError
 
@@ -272,6 +273,28 @@ class StrictSD15Adapter:
                 match.reason or "The loaded model is not supported by the strict SD 1.5 adapter",
             )
         return match.attention_blocks
+
+    def cross_attention_modules(self, model_context: Any) -> Mapping[tuple[str, int, int], Any]:
+        blocks = self.attention_blocks(model_context)
+        unet = model_context.forge_objects.unet.model.diffusion_model
+        result = {}
+        for block in blocks:
+            sequence = (
+                unet.input_blocks[block.block_index]
+                if block.block_kind == "input"
+                else unet.output_blocks[block.block_index]
+                if block.block_kind == "output"
+                else unet.middle_block
+            )
+            spatial = _spatial_transformers(sequence)
+            if len(spatial) != 1 or block.transformer_index >= len(spatial[0].transformer_blocks):
+                raise PlanError(
+                    "model.sd15.attention_module_mismatch",
+                    "$.engine",
+                    "The verified SD 1.5 cross-attention module could not be resolved",
+                )
+            result[block.identity] = spatial[0].transformer_blocks[block.transformer_index].attn2
+        return MappingProxyType(result)
 
     def attention_grids(self, model_context: Any, *, width: int, height: int) -> tuple[AttentionGrid, ...]:
         for name, value in (("width", width), ("height", height)):

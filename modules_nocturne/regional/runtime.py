@@ -115,6 +115,7 @@ class RegionalRuntime:
         self._mask_cache = MaskCompilerCache(max_entries=mask_cache_entries, max_bytes=mask_cache_bytes)
         self._active_batch: RegionalBatchCompilation | None = None
         self._resources: list[_OwnedResource] = []
+        self._installed_engine: Any | None = None
         self._closed = False
 
     @property
@@ -184,19 +185,44 @@ class RegionalRuntime:
         self._active_batch = batch
 
         if installer is not None:
-            try:
-                installed = installer.install(runtime=self, batch=batch, model_context=model_context)
-                if installed is not None:
-                    self.own_resource(installed)
-            except BaseException as install_error:
-                try:
-                    self.end_batch()
-                except BaseException as cleanup_error:
-                    add_note = getattr(install_error, "add_note", None)
-                    if callable(add_note):
-                        add_note(f"Regional cleanup also failed: {cleanup_error}")
-                raise
+            self.install_engine(installer=installer, model_context=model_context)
         return self._active_batch
+
+    def install_engine(
+        self,
+        *,
+        installer: RegionalRuntimeInstaller,
+        model_context: Any,
+    ) -> Any:
+        if self._closed:
+            raise RuntimeError("A closed Regional runtime cannot install an engine")
+        if self._active_batch is None:
+            raise RuntimeError("A Regional engine requires an active batch")
+        if self._installed_engine is not None:
+            raise RuntimeError("A Regional engine is already installed for this batch")
+        try:
+            installed = installer.install(
+                runtime=self,
+                batch=self._active_batch,
+                model_context=model_context,
+            )
+            if installed is not None:
+                self._installed_engine = installed
+                self.own_resource(installed)
+                if self._active_batch.conditioning is not None:
+                    bind = getattr(installed, "bind_conditioning", None)
+                    if not callable(bind):
+                        raise RuntimeError("The installed Regional engine cannot accept conditioning")
+                    bind(self._active_batch.conditioning)
+            return installed
+        except BaseException as install_error:
+            try:
+                self.end_batch()
+            except BaseException as cleanup_error:
+                add_note = getattr(install_error, "add_note", None)
+                if callable(add_note):
+                    add_note(f"Regional cleanup also failed: {cleanup_error}")
+            raise
 
     def compile_masks(
         self,
@@ -250,6 +276,11 @@ class RegionalRuntime:
             hires_steps=hires_steps,
         )
         self._active_batch = replace(self._active_batch, conditioning=conditioning)
+        if self._installed_engine is not None:
+            bind = getattr(self._installed_engine, "bind_conditioning", None)
+            if not callable(bind):
+                raise RuntimeError("The installed Regional engine cannot accept conditioning")
+            bind(conditioning)
         return conditioning
 
     def own_resource(
@@ -278,6 +309,7 @@ class RegionalRuntime:
             return
         resources = tuple(reversed(self._resources))
         self._resources.clear()
+        self._installed_engine = None
         self._active_batch = None
         first_error: BaseException | None = None
         for resource in resources:

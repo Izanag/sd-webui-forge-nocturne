@@ -26,6 +26,13 @@ class RegionalEngine(Protocol):
 
 
 @runtime_checkable
+class InstalledRegionalEngine(Protocol):
+    def bind_conditioning(self, conditioning: Any) -> None: ...
+
+    def close(self) -> None: ...
+
+
+@runtime_checkable
 class RegionalModelAdapter(Protocol):
     adapter_id: str
 
