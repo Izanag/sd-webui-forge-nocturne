@@ -1,4 +1,14 @@
-<h1 align="center">Stable Diffusion WebUI Forge - Neo</h1>
+<h1 align="center">Nocturne</h1>
+
+<p align="center">
+An AGPL-3.0 fork of Stable Diffusion WebUI Forge Neo with a native Regional generation workspace.
+</p>
+
+Nocturne currently includes an isolated Regional script context, conservative native settings, and a top-level Regional workspace shell. Regional sampling remains disabled until supported runtime components are available.
+
+The current Forge Neo base is [`ff7b9ff5aca35b1a69ca8bd0f1f5def4ee6a0802`](https://github.com/Haoming02/sd-webui-forge-classic/commit/ff7b9ff5aca35b1a69ca8bd0f1f5def4ee6a0802).
+
+## Forge Neo foundation
 
 <p align="center"><sup>
 [ <b>Neo</b> | <a href="https://github.com/Haoming02/sd-webui-forge-classic/tree/classic#stable-diffusion-webui-forge---classic">Classic</a> ]

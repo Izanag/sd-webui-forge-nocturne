@@ -4,6 +4,7 @@ import re
 import sys
 from collections import namedtuple
 from dataclasses import dataclass
+from enum import Enum
 
 import gradio as gr
 
@@ -12,6 +13,12 @@ from modules import errors, extensions, paths, script_callbacks, script_loading,
 topological_sort = util.topological_sort
 
 AlwaysVisible = object()
+
+
+class GenerationContext(str, Enum):
+    TXT2IMG = "txt2img"
+    IMG2IMG = "img2img"
+    REGIONAL = "regional"
 
 
 class MaskBlendArgs:
@@ -70,6 +77,10 @@ class Script:
     is_txt2img = False
     is_img2img = False
     tabname = None
+    generation_context = None
+
+    supported_generation_contexts = (GenerationContext.TXT2IMG, GenerationContext.IMG2IMG)
+    """Generation workspaces where this script is explicitly supported."""
 
     group = None
     """A gr.Group component that has all script's UI inside it."""
@@ -538,10 +549,11 @@ def load_scripts():
             current_basedir = paths.script_path
             timer.startup_timer.record(scriptfile.filename)
 
-    global scripts_txt2img, scripts_img2img, scripts_postproc
+    global scripts_txt2img, scripts_img2img, scripts_regional, scripts_postproc
 
     scripts_txt2img = ScriptRunner()
     scripts_img2img = ScriptRunner()
+    scripts_regional = ScriptRunner()
     scripts_postproc = scripts_postprocessing.ScriptPostprocessingRunner()
 
 
@@ -590,8 +602,15 @@ class ScriptRunner:
         self.on_after_component_elem_id = {}
         """dict of callbacks to be called after an element is created; key=elem_id, value=list of callbacks"""
 
-    def initialize_scripts(self, is_img2img):
+    def initialize_scripts(self, is_img2img=None, *, context=None):
         from modules import scripts_auto_postprocessing
+
+        if context is None:
+            context = GenerationContext.IMG2IMG if is_img2img else GenerationContext.TXT2IMG
+        else:
+            context = GenerationContext(context)
+
+        legacy_is_img2img = context == GenerationContext.IMG2IMG
 
         self.scripts.clear()
         self.alwayson_scripts.clear()
@@ -606,10 +625,18 @@ class ScriptRunner:
                 errors.report(f"Error # failed to initialize Script {script_data.module}: ", exc_info=True)
                 continue
 
+            supported_contexts = {
+                item.value if isinstance(item, GenerationContext) else str(item).lower()
+                for item in getattr(script, "supported_generation_contexts", ())
+            }
+            if context.value not in supported_contexts:
+                continue
+
             script.filename = script_data.path
-            script.is_txt2img = not is_img2img
-            script.is_img2img = is_img2img
-            script.tabname = "img2img" if is_img2img else "txt2img"
+            script.generation_context = context
+            script.is_txt2img = context == GenerationContext.TXT2IMG
+            script.is_img2img = legacy_is_img2img
+            script.tabname = context.value
 
             visibility = script.show(script.is_img2img)
 
@@ -1056,6 +1083,7 @@ class ScriptRunner:
 
 scripts_txt2img: ScriptRunner = None
 scripts_img2img: ScriptRunner = None
+scripts_regional: ScriptRunner = None
 scripts_postproc: scripts_postprocessing.ScriptPostprocessingRunner = None
 scripts_current: ScriptRunner = None
 
@@ -1064,6 +1092,7 @@ def reload_script_body_only():
     cache = {}
     scripts_txt2img.reload_sources(cache)
     scripts_img2img.reload_sources(cache)
+    scripts_regional.reload_sources(cache)
 
 
 reload_scripts = load_scripts  # compatibility alias

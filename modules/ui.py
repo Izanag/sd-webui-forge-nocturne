@@ -191,6 +191,7 @@ def create_override_settings_dropdown(tabname, row):
 def create_ui():
     import modules.img2img
     import modules.txt2img
+    from modules_nocturne import ui as nocturne_ui
 
     reload_javascript()
 
@@ -476,6 +477,10 @@ def create_ui():
 
         if shared.opts.paste_safe_guard:
             toprow.hook_paste_guard()
+
+    scripts.scripts_current = scripts.scripts_regional
+    scripts.scripts_regional.initialize_scripts(context=scripts.GenerationContext.REGIONAL)
+    regional_interface = nocturne_ui.create_regional_interface(create_output_panel, head=canvas_head)
 
     scripts.scripts_current = scripts.scripts_img2img
     scripts.scripts_img2img.initialize_scripts(is_img2img=True)
@@ -868,6 +873,7 @@ def create_ui():
 
     interfaces = [
         (txt2img_interface, "txt2img", "txt2img"),
+        (regional_interface, "Regional", "regional"),
         (img2img_interface, "img2img", "img2img"),
         (extras_interface, "Extras", "extras"),
         (pnginfo_interface, "PNG Info", "pnginfo"),

@@ -9,6 +9,7 @@ from modules.paths_internal import data_path, default_output_dir
 from modules.shared_cmd_options import cmd_opts
 from modules_forge import presets as forge_presets
 from modules_forge import shared_options as forge_shared_options
+from modules_nocturne import bootstrap as nocturne_bootstrap
 
 options_templates = {}
 hide_dirs = shared.hide_dirs
@@ -594,3 +595,11 @@ options_templates.update(
 
 forge_shared_options.register(options_templates, options_section, OptionInfo)
 forge_presets.register(options_templates)
+nocturne_bootstrap.register_options(
+    options_templates,
+    options_section=options_section,
+    option_info=OptionInfo,
+    option_html=OptionHTML,
+    categories=categories,
+    gradio=gr,
+)
