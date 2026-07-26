@@ -64,6 +64,7 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
     runtime_installer: RegionalRuntimeInstaller | None = field(default=None, repr=False)
     regional_runtime: RegionalRuntime = field(init=False, repr=False)
     regional_metadata_bundle: MetadataBundle = field(init=False, repr=False)
+    regional_engine_runtime_options: Mapping[str, Any] = field(init=False, repr=False)
     regional_final_prompts: list[Any] = field(init=False, repr=False)
     regional_resolved_seeds: list[Any] = field(init=False, repr=False)
 
@@ -123,9 +124,24 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         self.regional_runtime = RegionalRuntime(self.authorized_plan)
         self.regional_final_prompts = []
         self.regional_resolved_seeds = []
+        from modules import shared
+
+        self.regional_engine_runtime_options = MappingProxyType(
+            {
+                "attention_memory_budget_mb": int(
+                    getattr(
+                        shared.opts,
+                        "nocturne_regional_attention_memory_mb",
+                        64,
+                    )
+                )
+            }
+        )
         self.regional_metadata_bundle = build_metadata(
             self.authorized_plan.plan,
             selected_engine=self.authorized_plan.engine.engine_id,
+            engine_version=self.authorized_plan.engine.engine_version,
+            engine_runtime_options=self.regional_engine_runtime_options,
             adapter_id=self.authorized_plan.adapter_id,
             accepted_fallbacks=self.authorized_plan.accepted_fallbacks,
         )
@@ -133,8 +149,19 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         self.extra_generation_params.update(
             {
                 "Nocturne Regional Engine Version": self.authorized_plan.engine.engine_version,
+                "Nocturne Regional Attention Memory Budget": (
+                    f"{self.regional_engine_runtime_options['attention_memory_budget_mb']} MiB"
+                ),
             }
         )
+        if self.authorized_plan.engine.cost_warning:
+            self.extra_generation_params["Nocturne Regional Warnings"] = (
+                self.authorized_plan.engine.cost_warning
+            )
+        if self.authorized_plan.accepted_fallbacks:
+            self.extra_generation_params["Nocturne Regional Accepted Fallbacks"] = "; ".join(
+                self.authorized_plan.accepted_fallbacks
+            )
 
     def _batch_context(self) -> RegionalBatchContext:
         batch_number = int(self.iteration)

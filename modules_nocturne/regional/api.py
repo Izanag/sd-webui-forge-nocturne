@@ -302,6 +302,8 @@ class RegionalApi:
                         metadata = build_metadata(
                             authorized.plan,
                             selected_engine=authorized.engine.engine_id,
+                            engine_version=authorized.engine.engine_version,
+                            engine_runtime_options=regional.regional_engine_runtime_options,
                             adapter_id=authorized.adapter_id,
                             accepted_fallbacks=authorized.accepted_fallbacks,
                             resolved_seeds=tuple(regional.regional_resolved_seeds),

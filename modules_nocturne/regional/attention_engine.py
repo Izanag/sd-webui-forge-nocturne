@@ -90,6 +90,7 @@ class AttentionDecompositionEngine:
 class SD15AttentionRuntimeInstaller:
     adapter: StrictSD15Adapter = sd15_adapter
     attention_function: Callable | None = None
+    memory_budget_mb: int | None = None
     requires_conditioning: bool = True
 
     def install(
@@ -134,6 +135,19 @@ class SD15AttentionRuntimeInstaller:
             for grid in grids
         }
         modules = self.adapter.cross_attention_modules(model_context)
+        memory_budget_mb = self.memory_budget_mb
+        if memory_budget_mb is None:
+            from modules import shared
+
+            memory_budget_mb = int(
+                getattr(shared.opts, "nocturne_regional_attention_memory_mb", 64)
+            )
+        if not 16 <= memory_budget_mb <= 2048:
+            raise PlanError(
+                "engine.attention_memory_budget.invalid",
+                "$.engine",
+                "Regional attention working-memory budget must be between 16 and 2048 MiB",
+            )
 
         previous_unet = model_context.forge_objects.unet
         cloned_unet = previous_unet.clone()
@@ -152,6 +166,7 @@ class SD15AttentionRuntimeInstaller:
             },
             image_indices=batch.context.image_indices,
             attention_function=self.attention_function,
+            attention_memory_budget_bytes=memory_budget_mb * 1024 * 1024,
         )
         try:
             installation.install()
@@ -178,6 +193,7 @@ class InstalledAttentionDecomposition:
         guidance_by_region,
         image_indices,
         attention_function: Callable | None,
+        attention_memory_budget_bytes: int = 64 * 1024 * 1024,
     ) -> None:
         self.model_context = model_context
         self.previous_unet = previous_unet
@@ -189,6 +205,7 @@ class InstalledAttentionDecomposition:
         self.guidance_by_region = dict(guidance_by_region)
         self.image_indices = tuple(image_indices)
         self.attention_function = attention_function
+        self.attention_memory_budget_bytes = int(attention_memory_budget_bytes)
         self.conditioning: RegionalConditioningBatch | None = None
         self._mask_tensors: dict[tuple[Any, ...], tuple[Any, dict[Any, Any]]] = {}
         self._closed = False
@@ -287,6 +304,7 @@ class InstalledAttentionDecomposition:
             image = self.conditioning.images[row % image_count]
             polarity = "negative" if float(cond_mark[row]) >= 0.5 else "positive"
             composed = global_output[row : row + 1] * global_mask
+            active_regions = []
             for region_id in self.enabled_region_ids:
                 start, end = self.guidance_by_region[region_id]
                 if progress < start or progress > end:
@@ -302,16 +320,56 @@ class InstalledAttentionDecomposition:
                 if not torch.is_tensor(context) or context.ndim != 2:
                     raise RuntimeError("SD 1.5 Regional conditioning must be a two-dimensional tensor")
                 context = context.to(device=q.device, dtype=q.dtype).unsqueeze(0)
-                regional_k = module.to_k(context)
-                regional_v = module.to_v(context)
+                active_regions.append((region_id, context))
+
+            if not active_regions:
+                output[row : row + 1] = composed
+                continue
+
+            context_elements = active_regions[0][1].numel()
+            score_elements = (
+                q.shape[1]
+                * active_regions[0][1].shape[1]
+                * max(1, block.heads)
+            )
+            estimated_elements_per_region = (
+                3 * q[row : row + 1].numel()
+                + 4 * context_elements
+                + score_elements
+            )
+            estimated_bytes_per_region = max(
+                q.element_size(),
+                estimated_elements_per_region * q.element_size(),
+            )
+            chunk_size = max(
+                1,
+                min(
+                    len(active_regions),
+                    self.attention_memory_budget_bytes
+                    // estimated_bytes_per_region,
+                ),
+            )
+            for offset in range(0, len(active_regions), chunk_size):
+                chunk = active_regions[offset : offset + chunk_size]
+                contexts = torch.cat([context for _, context in chunk], dim=0)
+                query = q[row : row + 1].expand(len(chunk), -1, -1).contiguous()
+                regional_k = module.to_k(contexts)
+                regional_v = module.to_v(contexts)
                 regional_output = attention(
-                    q[row : row + 1],
+                    query,
                     regional_k,
                     regional_v,
                     block.heads,
                     None,
                 )
-                composed = composed + regional_output * region_masks[region_id]
+                masks = torch.cat(
+                    [region_masks[region_id] for region_id, _ in chunk],
+                    dim=0,
+                )
+                composed = composed + (regional_output * masks).sum(
+                    dim=0,
+                    keepdim=True,
+                )
             output[row : row + 1] = composed
         return output
 

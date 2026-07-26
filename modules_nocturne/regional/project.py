@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -42,7 +42,16 @@ class RestoredRegionalMetadata:
     selected_engine: str | None
     adapter_id: str | None
     accepted_fallbacks: tuple[str, ...]
+    engine_version: str | None = None
+    engine_runtime_options: Mapping[str, Any] = field(default_factory=dict)
     resolved_seeds: tuple[ResolvedSeedPlan, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "engine_runtime_options",
+            MappingProxyType(dict(self.engine_runtime_options)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +109,8 @@ def _metadata_document(
     plan: RegionalGenerationPlan,
     *,
     selected_engine: str | None,
+    engine_version: str | None,
+    engine_runtime_options: Mapping[str, Any],
     adapter_id: str | None,
     accepted_fallbacks: tuple[str, ...],
     resolved_seeds: tuple[ResolvedSeedPlan, ...],
@@ -110,6 +121,8 @@ def _metadata_document(
         "plan_hash": plan_hash(plan),
         "requested_engine": plan.engine.requested,
         "selected_engine": selected_engine,
+        "engine_version": engine_version,
+        "engine_runtime_options": dict(engine_runtime_options),
         "adapter_id": adapter_id,
         "accepted_fallbacks": list(accepted_fallbacks),
         "resolved_seeds": [
@@ -142,6 +155,8 @@ def build_metadata(
     plan: RegionalGenerationPlan,
     *,
     selected_engine: str | None = None,
+    engine_version: str | None = None,
+    engine_runtime_options: Mapping[str, Any] | None = None,
     adapter_id: str | None = None,
     accepted_fallbacks: tuple[str, ...] = (),
     resolved_seeds: ResolvedSeedBatch | tuple[ResolvedSeedPlan, ...] = (),
@@ -153,6 +168,8 @@ def build_metadata(
     document = _metadata_document(
         plan,
         selected_engine=selected_engine,
+        engine_version=engine_version,
+        engine_runtime_options=engine_runtime_options or {},
         adapter_id=adapter_id,
         accepted_fallbacks=accepted_fallbacks,
         resolved_seeds=seed_records,
@@ -165,6 +182,14 @@ def build_metadata(
         "Nocturne Regional Summary": _summary(plan, selected_engine),
         "Nocturne Regional Requested Engine": plan.engine.requested,
         "Nocturne Regional Selected Engine": selected_engine or "",
+        "Nocturne Regional Engine Version": engine_version or "",
+        "Nocturne Regional Runtime Options": json.dumps(
+            dict(engine_runtime_options or {}),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         "Nocturne Regional Adapter": adapter_id or "",
     }
     if not sidecar_required:
@@ -230,6 +255,8 @@ def restore_metadata(
 
     requested_engine = document.get("requested_engine")
     selected_engine = document.get("selected_engine")
+    engine_version = document.get("engine_version")
+    engine_runtime_options = document.get("engine_runtime_options", {})
     adapter_id = document.get("adapter_id")
     if not isinstance(requested_engine, str):
         raise PlanError("metadata.requested_engine.invalid", "$.requested_engine", "Requested engine must be a string")
@@ -241,6 +268,38 @@ def restore_metadata(
         )
     if selected_engine is not None and not isinstance(selected_engine, str):
         raise PlanError("metadata.selected_engine.invalid", "$.selected_engine", "Selected engine must be a string or null")
+    if engine_version is not None and (
+        not isinstance(engine_version, str) or len(engine_version) > 128
+    ):
+        raise PlanError(
+            "metadata.engine_version.invalid",
+            "$.engine_version",
+            "Engine version must be a string of at most 128 characters or null",
+        )
+    if (
+        not isinstance(engine_runtime_options, dict)
+        or len(engine_runtime_options) > 64
+        or not all(isinstance(key, str) for key in engine_runtime_options)
+    ):
+        raise PlanError(
+            "metadata.engine_runtime_options.invalid",
+            "$.engine_runtime_options",
+            "Engine runtime options must be an object with at most 64 string keys",
+        )
+    try:
+        json.dumps(
+            engine_runtime_options,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as error:
+        raise PlanError(
+            "metadata.engine_runtime_options.invalid",
+            "$.engine_runtime_options",
+            "Engine runtime options must contain finite JSON values",
+        ) from error
     if adapter_id is not None and not isinstance(adapter_id, str):
         raise PlanError("metadata.adapter.invalid", "$.adapter_id", "Adapter ID must be a string or null")
 
@@ -291,6 +350,8 @@ def restore_metadata(
         selected_engine=selected_engine,
         adapter_id=adapter_id,
         accepted_fallbacks=tuple(fallbacks),
+        engine_version=engine_version,
+        engine_runtime_options=engine_runtime_options,
         resolved_seeds=tuple(restored_seed_records),
     )
 

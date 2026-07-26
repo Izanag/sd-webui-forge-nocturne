@@ -74,6 +74,14 @@ def register_options(
                         gradio.Slider,
                         {"minimum": 1, "maximum": 64, "step": 1},
                     ),
+                    "nocturne_regional_attention_memory_mb": option_info(
+                        64,
+                        "Regional attention working-memory budget (MiB)",
+                        gradio.Slider,
+                        {"minimum": 16, "maximum": 2048, "step": 16},
+                    ).info(
+                        "Limits how many region branches are evaluated together; lower values reduce peak VRAM use"
+                    ),
                     "nocturne_regional_engine": option_info(
                         "Auto",
                         "Regional engine",
