@@ -147,7 +147,16 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
             installer=self.runtime_installer,
         )
         try:
-            return super().setup_conds()
+            result = super().setup_conds()
+            if self.runtime_installer is not None and getattr(self.runtime_installer, "requires_conditioning", False):
+                self.regional_runtime.build_conditioning(
+                    model_context=self.sd_model,
+                    steps=int(self.firstpass_steps),
+                    width=int(self.width),
+                    height=int(self.height),
+                    distilled_cfg_scale=float(self.distilled_cfg_scale),
+                )
+            return result
         except BaseException as conditioning_error:
             try:
                 self.regional_runtime.end_batch()

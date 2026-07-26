@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Iterable, Protocol
 
+from modules_nocturne.regional.conditioning import RegionalConditioningBatch, build_regional_conditioning
 from modules_nocturne.regional.generation import AuthorizedRegionalPlan
 from modules_nocturne.regional.masks import CompiledMaskSet, MaskCompilerCache, compile_mask_pyramid
 from modules_nocturne.regional.prompts import CompiledPromptPlan, PromptExpansionService, PromptTokenCounter, compile_prompt_plan
@@ -61,10 +62,13 @@ class RegionalBatchCompilation:
     prompts: tuple[CompiledPromptPlan, ...]
     seeds: tuple[ResolvedSeedPlan, ...]
     masks: tuple[CompiledMaskSet, ...] = ()
+    conditioning: RegionalConditioningBatch | None = None
 
 
 class RegionalRuntimeInstaller(Protocol):
     """Adapter-owned installation called after Forge finalises the active model."""
+
+    requires_conditioning: bool
 
     def install(
         self,
@@ -220,6 +224,33 @@ class RegionalRuntime:
         merged = (*self._active_batch.masks, *(item for item in compiled if item.key not in known))
         self._active_batch = replace(self._active_batch, masks=merged)
         return compiled
+
+    def build_conditioning(
+        self,
+        *,
+        model_context: Any,
+        steps: int,
+        width: int,
+        height: int,
+        distilled_cfg_scale: float,
+        hires_steps: int | None = None,
+    ) -> RegionalConditioningBatch:
+        if self._closed:
+            raise RuntimeError("A closed Regional runtime cannot build conditioning")
+        if self._active_batch is None:
+            raise RuntimeError("Regional conditioning requires an active batch")
+        conditioning = build_regional_conditioning(
+            self._active_batch.prompts,
+            image_indices=self._active_batch.context.image_indices,
+            model_context=model_context,
+            steps=steps,
+            width=width,
+            height=height,
+            distilled_cfg_scale=distilled_cfg_scale,
+            hires_steps=hires_steps,
+        )
+        self._active_batch = replace(self._active_batch, conditioning=conditioning)
+        return conditioning
 
     def own_resource(
         self,
