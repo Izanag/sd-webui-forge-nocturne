@@ -63,6 +63,45 @@ class RegionalValidateResponse(BaseModel):
     issues: list[RegionalValidationIssueResponse] = Field(default_factory=list)
 
 
+class RegionalGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    plan: dict[str, Any]
+    accepted_issue_codes: list[str] = Field(default_factory=list)
+    accepted_fallbacks: list[str] = Field(default_factory=list)
+    send_images: bool = True
+    save_images: bool = False
+    force_task_id: str | None = None
+
+
+class RegionalResolvedPromptResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    image_index: int
+    owner: str
+    region_id: str | None = None
+    polarity: str
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RegionalGenerateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    images: list[str] = Field(default_factory=list)
+    parameters: dict[str, Any]
+    info: str
+    task_id: str
+    plan_hash: str
+    normalized_plan: dict[str, Any]
+    adapter_id: str
+    selected_engine: str
+    engine_version: str
+    accepted_fallbacks: list[str] = Field(default_factory=list)
+    warnings: list[RegionalValidationIssueResponse] = Field(default_factory=list)
+    final_prompts: list[RegionalResolvedPromptResponse] = Field(default_factory=list)
+    metadata: dict[str, Any]
+
+
 def _capability_response(report: CapabilityReport) -> RegionalCapabilityResponse:
     return RegionalCapabilityResponse(
         status=report.status,
@@ -90,6 +129,28 @@ def _issue_response(issue: ValidationIssue) -> RegionalValidationIssueResponse:
     return RegionalValidationIssueResponse(**issue.as_dict())
 
 
+def _request_dict(request: BaseModel) -> dict[str, Any]:
+    if hasattr(request, "model_dump"):
+        return request.model_dump()
+    return request.dict()
+
+
+def _resolved_prompt_response(record) -> RegionalResolvedPromptResponse:
+    return RegionalResolvedPromptResponse(
+        image_index=record.image_index,
+        owner=record.owner.kind,
+        region_id=str(record.owner.region_id) if record.owner.region_id is not None else None,
+        polarity=record.polarity,
+        entries=[
+            {
+                "end_at_step": entry.end_at_step,
+                "text": entry.text,
+            }
+            for entry in record.entries
+        ],
+    )
+
+
 class RegionalApi:
     def __init__(
         self,
@@ -97,10 +158,12 @@ class RegionalApi:
         service: CapabilityService,
         model_provider: Callable[[], Any],
         max_regions_provider: Callable[[], int],
+        queue_lock=None,
     ) -> None:
         self.service = service
         self.model_provider = model_provider
         self.max_regions_provider = max_regions_provider
+        self.queue_lock = queue_lock
 
     def capabilities(self) -> RegionalCapabilityResponse:
         return _capability_response(self.service.report(self.model_provider()))
@@ -166,6 +229,132 @@ class RegionalApi:
             issues=[_issue_response(issue) for issue in combined.issues],
         )
 
+    def generate(self, request: RegionalGenerateRequest) -> RegionalGenerateResponse:
+        from contextlib import closing
+
+        from fastapi import HTTPException
+
+        from modules import processing, shared
+        from modules.api.api import encode_pil_to_base64
+        from modules.progress import add_task_to_queue, create_task_id, finish_task, start_task
+        from modules_nocturne.regional.errors import PlanValidationError
+        from modules_nocturne.regional.generation import authorize_generation
+        from modules_nocturne.regional.processing import StableDiffusionProcessingRegional
+        from modules_nocturne.regional.project import build_metadata, save_sidecar
+
+        try:
+            plan = load_plan(request.plan)
+        except PlanError as error:
+            raise HTTPException(status_code=422, detail=error.issue.as_dict()) from error
+
+        task_id = request.force_task_id or create_task_id("regional")
+        add_task_to_queue(task_id)
+        lock = self.queue_lock
+        if lock is None:
+            raise HTTPException(status_code=500, detail="Regional generation queue is unavailable")
+
+        try:
+            with lock:
+                start_task(task_id)
+                model = self.model_provider()
+                capability_report = self.service.report(model)
+                try:
+                    authorized = authorize_generation(
+                        plan,
+                        capability_report,
+                        accepted_issue_codes=frozenset(request.accepted_issue_codes),
+                        accepted_fallbacks=tuple(request.accepted_fallbacks),
+                    )
+                except PlanValidationError as error:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=[issue.as_dict() for issue in error.report.issues],
+                    ) from error
+                except PlanError as error:
+                    raise HTTPException(status_code=422, detail=error.issue.as_dict()) from error
+
+                engine = self.service.engines.get(authorized.engine.engine_id)
+                installer_factory = getattr(engine, "runtime_installer", None)
+                if engine is None or not callable(installer_factory):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="The selected Regional engine has no runtime installer",
+                    )
+
+                shared.state.begin(job="regional")
+                try:
+                    with closing(
+                        StableDiffusionProcessingRegional.from_authorized_plan(
+                            authorized,
+                            sd_model=model,
+                            outpath_samples=shared.opts.outdir_samples
+                            or shared.opts.outdir_txt2img_samples,
+                            outpath_grids=shared.opts.outdir_grids
+                            or shared.opts.outdir_txt2img_grids,
+                            do_not_save_samples=not request.save_images,
+                            do_not_save_grid=not request.save_images,
+                            is_api=True,
+                            runtime_installer=installer_factory(),
+                        )
+                    ) as regional:
+                        processed = processing.process_images(regional)
+                        processing.process_extra_images(processed)
+                        metadata = build_metadata(
+                            authorized.plan,
+                            selected_engine=authorized.engine.engine_id,
+                            adapter_id=authorized.adapter_id,
+                            accepted_fallbacks=authorized.accepted_fallbacks,
+                            resolved_seeds=tuple(regional.regional_resolved_seeds),
+                        )
+                        output_images = processed.images + processed.extra_images
+                        for image in output_images:
+                            image.info.update(metadata.fields)
+                            saved_path = getattr(image, "already_saved_as", None)
+                            if metadata.sidecar_required and saved_path:
+                                save_sidecar(saved_path, metadata)
+                        final_prompts = tuple(regional.regional_final_prompts)
+                finally:
+                    shared.state.end()
+                    shared.total_tqdm.clear()
+        except HTTPException:
+            raise
+        except PlanError as error:
+            raise HTTPException(status_code=422, detail=error.issue.as_dict()) from error
+        finally:
+            finish_task(task_id)
+
+        images = (
+            [
+                encode_pil_to_base64(image).decode("ascii")
+                for image in processed.images + processed.extra_images
+            ]
+            if request.send_images
+            else []
+        )
+        warnings = [
+            _issue_response(issue)
+            for issue in authorized.validation.issues
+            if issue.severity.value != "error"
+        ]
+        return RegionalGenerateResponse(
+            images=images,
+            parameters=_request_dict(request),
+            info=processed.js(),
+            task_id=task_id,
+            plan_hash=authorized.plan_hash,
+            normalized_plan=plan_to_dict(authorized.plan),
+            adapter_id=authorized.adapter_id,
+            selected_engine=authorized.engine.engine_id,
+            engine_version=authorized.engine.engine_version,
+            accepted_fallbacks=list(authorized.accepted_fallbacks),
+            warnings=warnings,
+            final_prompts=[
+                _resolved_prompt_response(record)
+                for record in final_prompts
+            ],
+            metadata=dict(metadata.sidecar_document),
+        )
+
 
 def register_routes(api_host) -> RegionalApi:
     from modules import shared
@@ -174,6 +363,7 @@ def register_routes(api_host) -> RegionalApi:
         service=capability_service,
         model_provider=lambda: shared.sd_model,
         max_regions_provider=lambda: shared.opts.nocturne_regional_max_regions,
+        queue_lock=api_host.queue_lock,
     )
     api_host.add_api_route(
         "/sdapi/v1/regional/capabilities",
@@ -186,5 +376,11 @@ def register_routes(api_host) -> RegionalApi:
         regional_api.validate,
         methods=["POST"],
         response_model=RegionalValidateResponse,
+    )
+    api_host.add_api_route(
+        "/sdapi/v1/regional",
+        regional_api.generate,
+        methods=["POST"],
+        response_model=RegionalGenerateResponse,
     )
     return regional_api

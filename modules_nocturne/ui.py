@@ -348,6 +348,7 @@ def _capability_values():
 
 
 def _capability_controls(current="auto"):
+    report = capability_service.report(getattr(shared, "sd_model", None))
     choices, interactive, details = _capability_values()
     if current not in choices:
         choices = [*choices, current]
@@ -366,6 +367,10 @@ def _capability_controls(current="auto"):
             else None,
         ),
         (),
+        gr.update(
+            value="Generate" if report.status == "supported" else "Generation unavailable",
+            interactive=report.status == "supported" and not required_fallbacks,
+        ),
     )
 
 
@@ -404,6 +409,7 @@ def _engine_preflight_values(current):
 
 def _engine_preflight_controls(current):
     cost_text, required_fallbacks = _engine_preflight_values(current)
+    report = capability_service.report(getattr(shared, "sd_model", None))
     return (
         gr.update(value=cost_text, visible=bool(cost_text)),
         gr.update(
@@ -415,12 +421,125 @@ def _engine_preflight_controls(current):
             else None,
         ),
         (),
+        gr.update(
+            value="Generate" if report.status == "supported" else "Generation unavailable",
+            interactive=report.status == "supported" and not required_fallbacks,
+        ),
     )
 
 
-def _accepted_fallbacks(current, acknowledged):
+def _accepted_fallback_controls(current, acknowledged):
     _, required_fallbacks = _engine_preflight_values(current)
-    return required_fallbacks if acknowledged else ()
+    report = capability_service.report(getattr(shared, "sd_model", None))
+    accepted = required_fallbacks if acknowledged else ()
+    ready = report.status == "supported" and (
+        not required_fallbacks or bool(acknowledged)
+    )
+    return accepted, gr.update(
+        value="Generate" if report.status == "supported" else "Generation unavailable",
+        interactive=ready,
+    )
+
+
+def _regional_generate_function(
+    id_task,
+    request: gr.Request,
+    plan_json,
+    accepted_fallbacks,
+    *script_args,
+):
+    from contextlib import closing
+
+    from modules import processing
+    from modules.ui import plaintext_to_html
+    from modules_nocturne.regional.generation import authorize_generation
+    from modules_nocturne.regional.processing import StableDiffusionProcessingRegional
+    from modules_nocturne.regional.project import build_metadata, save_sidecar
+
+    plan = load_valid_editor_plan(plan_json)
+    report = capability_service.report(getattr(shared, "sd_model", None))
+    authorized = authorize_generation(
+        plan,
+        report,
+        accepted_fallbacks=tuple(accepted_fallbacks or ()),
+    )
+    engine = capability_service.engines.get(authorized.engine.engine_id)
+    installer_factory = getattr(engine, "runtime_installer", None)
+    if engine is None or not callable(installer_factory):
+        raise RuntimeError("The selected Regional engine has no runtime installer")
+
+    with closing(
+        StableDiffusionProcessingRegional.from_authorized_plan(
+            authorized,
+            sd_model=shared.sd_model,
+            outpath_samples=shared.opts.outdir_samples
+            or shared.opts.outdir_txt2img_samples,
+            outpath_grids=shared.opts.outdir_grids
+            or shared.opts.outdir_txt2img_grids,
+            scripts_runner=scripts.scripts_regional,
+            script_args=script_args,
+            runtime_installer=installer_factory(),
+        )
+    ) as regional:
+        regional.user = request.username
+        processed = scripts.scripts_regional.run(regional, *script_args)
+        if processed is None:
+            processed = processing.process_images(regional)
+        processing.process_extra_images(processed)
+        metadata = build_metadata(
+            authorized.plan,
+            selected_engine=authorized.engine.engine_id,
+            adapter_id=authorized.adapter_id,
+            accepted_fallbacks=authorized.accepted_fallbacks,
+            resolved_seeds=tuple(regional.regional_resolved_seeds),
+        )
+        for image in processed.images + processed.extra_images:
+            image.info.update(metadata.fields)
+            saved_path = getattr(image, "already_saved_as", None)
+            if metadata.sidecar_required and saved_path:
+                save_sidecar(saved_path, metadata)
+
+    generation_info = processed.js()
+    if shared.opts.samples_log_stdout:
+        print(generation_info)
+    if shared.opts.do_not_show_images:
+        processed.images = []
+
+    if processed.video_path is None:
+        gallery = gr.update(
+            value=processed.images + processed.extra_images,
+            visible=True,
+        )
+        player = gr.update(value=None, visible=False)
+    else:
+        gallery = gr.update(value=None, visible=False)
+        player = gr.update(value=processed.video_path, visible=True)
+    return (
+        gallery,
+        player,
+        generation_info,
+        plaintext_to_html(processed.info),
+        plaintext_to_html(processed.comments, classname="comments"),
+    )
+
+
+def _regional_generate(
+    id_task: str,
+    request: gr.Request,
+    plan_json,
+    accepted_fallbacks,
+    *script_args,
+):
+    from modules_forge import main_thread
+
+    return main_thread.run_and_wait_result(
+        _regional_generate_function,
+        id_task,
+        request,
+        plan_json,
+        accepted_fallbacks,
+        *script_args,
+    )
 
 
 def create_regional_interface(create_output_panel: Callable, *, head: str | None = None) -> gr.Blocks:
@@ -430,11 +549,22 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
     initial_json = canonical_json(initial_plan)
     initial_engine_choices, initial_engine_interactive, initial_capability_status = _capability_values()
     initial_cost_warning, initial_required_fallbacks = _engine_preflight_values("auto")
+    initial_capability_report = capability_service.report(
+        getattr(shared, "sd_model", None)
+    )
+    initial_generation_available = (
+        initial_capability_report.status == "supported"
+        and not initial_required_fallbacks
+    )
 
     with gr.Blocks(analytics_enabled=False, head=head) as regional_interface:
         toprow = ui_toprow.Toprow(is_img2img=False, id_part="regional")
-        toprow.submit.value = "Generation unavailable"
-        toprow.submit.interactive = False
+        toprow.submit.value = (
+            "Generate"
+            if initial_capability_report.status == "supported"
+            else "Generation unavailable"
+        )
+        toprow.submit.interactive = initial_generation_available
 
         with gr.Column(elem_id="regional_workspace"):
             gr.HTML(
@@ -445,7 +575,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         border-radius:0 !important;
                         padding-inline:0 !important;
                     }
-                    #regional_canvas { overflow:auto; max-height:42rem; }
+                    #regional_canvas { overflow:auto !important; max-height:42rem; }
                     #regional_canvas svg { display:block; width:100%; min-height:20rem; touch-action:none; }
                     #regional_canvas .nocturne-layout-preview {
                         border-radius:var(--radius-lg);
@@ -470,7 +600,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 <section class="nocturne-regional-intro" aria-labelledby="regional_workspace_title">
                     <h2 id="regional_workspace_title">Regional</h2>
                     <p>Author prompts and spatial regions in one restorable plan.</p>
-                    <p role="status"><strong>Generation remains unavailable.</strong> Validation and mask preview are active.</p>
+                    <p role="status"><strong>Support is checked against the loaded model.</strong> Validation and mask preview remain available without sampling.</p>
                 </section>
                 """,
                 elem_id="regional_workspace_status",
@@ -485,6 +615,11 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             geometry_history = gr.State([])
             geometry_future = gr.State([])
             accepted_fallbacks = gr.State(())
+            generation_task = gr.Textbox(
+                value="",
+                visible=False,
+                elem_id="regional_generation_task",
+            )
             geometry_pointer_bridge = gr.Textbox(
                 value="",
                 container=False,
@@ -725,9 +860,15 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
 
             with gr.Accordion("Scripts", open=False, elem_id="regional_script_container"):
                 scripts.scripts_regional.prepare_ui()
-                scripts.scripts_regional.setup_ui(elem_id="regional_script_list")
+                regional_script_inputs = scripts.scripts_regional.setup_ui(
+                    elem_id="regional_script_list"
+                )
 
-            create_output_panel("regional", shared.opts.outdir_txt2img_samples, toprow)
+            output_panel = create_output_panel(
+                "regional",
+                shared.opts.outdir_txt2img_samples,
+                toprow,
+            )
 
         selected_editor_components = [
             region_name,
@@ -1083,7 +1224,12 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
         ).then(
             _engine_preflight_controls,
             inputs=[engine_choice],
-            outputs=[engine_cost_warning, fallback_acknowledgement, accepted_fallbacks],
+            outputs=[
+                engine_cost_warning,
+                fallback_acknowledgement,
+                accepted_fallbacks,
+                toprow.submit,
+            ],
             show_progress=False,
         )
         refresh_capabilities.click(
@@ -1095,15 +1241,42 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 engine_cost_warning,
                 fallback_acknowledgement,
                 accepted_fallbacks,
+                toprow.submit,
             ],
             show_progress=False,
         )
         fallback_acknowledgement.input(
-            _accepted_fallbacks,
+            _accepted_fallback_controls,
             inputs=[engine_choice, fallback_acknowledgement],
-            outputs=[accepted_fallbacks],
+            outputs=[accepted_fallbacks, toprow.submit],
             show_progress=False,
         )
+
+        from modules import call_queue
+
+        generation_event = dict(
+            fn=call_queue.wrap_gradio_gpu_call(
+                _regional_generate,
+                extra_outputs=[None, None, "", ""],
+            ),
+            _js="submit",
+            inputs=[
+                generation_task,
+                last_valid_plan,
+                accepted_fallbacks,
+                *regional_script_inputs,
+            ],
+            outputs=[
+                output_panel.gallery,
+                output_panel.player,
+                output_panel.generation_info,
+                output_panel.infotext,
+                output_panel.html_log,
+            ],
+            show_progress=False,
+        )
+        toprow.prompt.submit(**generation_event)
+        toprow.submit.click(**generation_event)
 
         region_inputs = selected_editor_components
         for component in region_inputs:

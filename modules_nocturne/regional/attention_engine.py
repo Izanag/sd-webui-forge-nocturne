@@ -62,6 +62,8 @@ class AttentionDecompositionEngine:
                     "regions.priority",
                     "regions.feather_px",
                     "regions.grow_shrink_px",
+                    "regions.guidance.start",
+                    "regions.guidance.end",
                     "composition.overlap_policy",
                     "composition.uncovered_policy",
                 }
@@ -98,6 +100,25 @@ class SD15AttentionRuntimeInstaller:
         model_context: Any,
     ) -> "InstalledAttentionDecomposition":
         plan = runtime.plan
+        scheduled_guidance = any(
+            region.enabled
+            and (region.guidance.start != 0.0 or region.guidance.end != 1.0)
+            for region in plan.regions
+        )
+        if scheduled_guidance:
+            from modules import sd_samplers_kdiffusion
+
+            sampler_name = str(plan.engine.options.get("sampler", "Euler a"))
+            k_diffusion_samplers = {
+                sampler.name
+                for sampler in sd_samplers_kdiffusion.samplers_data_k_diffusion
+            }
+            if sampler_name not in k_diffusion_samplers:
+                raise PlanError(
+                    "engine.guidance_sampler.unsupported",
+                    "$.engine.options.sampler",
+                    "Scheduled Regional guidance currently requires a K-diffusion sampler",
+                )
         grids = self.adapter.attention_grids(
             model_context,
             width=batch.context.width,

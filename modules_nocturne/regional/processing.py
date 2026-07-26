@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from modules import processing, scripts
 from modules_nocturne.regional.errors import PlanError
 from modules_nocturne.regional.generation import AuthorizedRegionalPlan
+from modules_nocturne.regional.project import MetadataBundle, build_metadata
 from modules_nocturne.regional.runtime import RegionalBatchContext, RegionalRuntime, RegionalRuntimeInstaller
 
 
@@ -62,6 +63,9 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
     authorized_plan: AuthorizedRegionalPlan | None = field(default=None, repr=False)
     runtime_installer: RegionalRuntimeInstaller | None = field(default=None, repr=False)
     regional_runtime: RegionalRuntime = field(init=False, repr=False)
+    regional_metadata_bundle: MetadataBundle = field(init=False, repr=False)
+    regional_final_prompts: list[Any] = field(init=False, repr=False)
+    regional_resolved_seeds: list[Any] = field(init=False, repr=False)
 
     generation_context = scripts.GenerationContext.REGIONAL
     is_regional = True
@@ -117,11 +121,17 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
                 "Hires processing is unavailable until the active Regional adapter proves pass support",
             )
         self.regional_runtime = RegionalRuntime(self.authorized_plan)
+        self.regional_final_prompts = []
+        self.regional_resolved_seeds = []
+        self.regional_metadata_bundle = build_metadata(
+            self.authorized_plan.plan,
+            selected_engine=self.authorized_plan.engine.engine_id,
+            adapter_id=self.authorized_plan.adapter_id,
+            accepted_fallbacks=self.authorized_plan.accepted_fallbacks,
+        )
+        self.extra_generation_params.update(self.regional_metadata_bundle.fields)
         self.extra_generation_params.update(
             {
-                "Nocturne Regional Hash": self.authorized_plan.plan_hash,
-                "Nocturne Regional Adapter": self.authorized_plan.adapter_id,
-                "Nocturne Regional Engine": self.authorized_plan.engine.engine_id,
                 "Nocturne Regional Engine Version": self.authorized_plan.engine.engine_version,
             }
         )
@@ -148,13 +158,17 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         try:
             result = super().setup_conds()
             if self.runtime_installer is not None and getattr(self.runtime_installer, "requires_conditioning", False):
-                self.regional_runtime.build_conditioning(
+                conditioning = self.regional_runtime.build_conditioning(
                     model_context=self.sd_model,
                     steps=int(self.firstpass_steps),
                     width=int(self.width),
                     height=int(self.height),
                     distilled_cfg_scale=float(self.distilled_cfg_scale),
                 )
+                self.regional_final_prompts.extend(conditioning.final_prompts)
+            active_batch = self.regional_runtime.active_batch
+            if active_batch is not None:
+                self.regional_resolved_seeds.extend(active_batch.seeds)
             return result
         except BaseException as conditioning_error:
             try:
