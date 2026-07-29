@@ -113,6 +113,9 @@ def _validate_generation_options(plan: RegionalGenerationPlan, issues: list[Vali
         ("steps", 1, MAX_GENERATION_STEPS),
         ("batch_count", 1, MAX_BATCH_COUNT),
         ("batch_size", 1, MAX_BATCH_SIZE),
+        ("hires_steps", 0, MAX_GENERATION_STEPS),
+        ("hires_width", 0, MAX_CANVAS_DIMENSION),
+        ("hires_height", 0, MAX_CANVAS_DIMENSION),
     )
     for name, minimum, maximum in integer_ranges:
         value = options.get(name)
@@ -128,18 +131,69 @@ def _validate_generation_options(plan: RegionalGenerationPlan, issues: list[Vali
                 f"Generation {name} must be an integer between {minimum} and {maximum}",
             )
 
-    cfg_scale = options.get("cfg_scale")
-    if cfg_scale is not None and (
-        isinstance(cfg_scale, bool)
-        or not isinstance(cfg_scale, (int, float))
-        or not math.isfinite(float(cfg_scale))
-        or not MIN_CFG_SCALE <= float(cfg_scale) <= MAX_CFG_SCALE
+    for name in ("cfg_scale", "hires_cfg_scale", "hires_distilled_cfg_scale"):
+        cfg_scale = options.get(name)
+        if cfg_scale is not None and (
+            isinstance(cfg_scale, bool)
+            or not isinstance(cfg_scale, (int, float))
+            or not math.isfinite(float(cfg_scale))
+            or not MIN_CFG_SCALE <= float(cfg_scale) <= MAX_CFG_SCALE
+        ):
+            _issue(
+                issues,
+                f"generation.{name}.out_of_range",
+                f"$.engine.options.{name}",
+                f"Generation {name} must be between {MIN_CFG_SCALE:g} and {MAX_CFG_SCALE:g}",
+            )
+
+    hires_enabled = options.get("hires_enabled")
+    if hires_enabled is not None and not isinstance(hires_enabled, bool):
+        _issue(
+            issues,
+            "generation.hires_enabled.invalid",
+            "$.engine.options.hires_enabled",
+            "Hires enabled must be a boolean",
+        )
+
+    hires_scale = options.get("hires_scale")
+    if hires_scale is not None and (
+        isinstance(hires_scale, bool)
+        or not isinstance(hires_scale, (int, float))
+        or not math.isfinite(float(hires_scale))
+        or not 1.0 <= float(hires_scale) <= 4.0
     ):
         _issue(
             issues,
-            "generation.cfg_scale.out_of_range",
-            "$.engine.options.cfg_scale",
-            f"Generation CFG scale must be between {MIN_CFG_SCALE:g} and {MAX_CFG_SCALE:g}",
+            "generation.hires_scale.out_of_range",
+            "$.engine.options.hires_scale",
+            "Hires scale must be between 1 and 4",
+        )
+
+    hires_denoising = options.get("hires_denoising_strength")
+    if hires_denoising is not None and (
+        isinstance(hires_denoising, bool)
+        or not isinstance(hires_denoising, (int, float))
+        or not math.isfinite(float(hires_denoising))
+        or not 0.0 <= float(hires_denoising) <= 1.0
+    ):
+        _issue(
+            issues,
+            "generation.hires_denoising_strength.out_of_range",
+            "$.engine.options.hires_denoising_strength",
+            "Hires denoising strength must be between 0 and 1",
+        )
+
+    hires_upscaler = options.get("hires_upscaler")
+    if hires_upscaler is not None and (
+        not isinstance(hires_upscaler, str)
+        or not hires_upscaler.strip()
+        or len(hires_upscaler) > MAX_GENERATION_NAME_LENGTH
+    ):
+        _issue(
+            issues,
+            "generation.hires_upscaler.invalid",
+            "$.engine.options.hires_upscaler",
+            f"Hires upscaler must be a non-empty string of at most {MAX_GENERATION_NAME_LENGTH} characters",
         )
 
     seed = options.get("seed")
@@ -215,6 +269,23 @@ def validate_plan(
             )
 
     _validate_generation_options(plan, issues)
+    if plan.passes.base != "regional":
+        _issue(
+            issues,
+            "passes.base.policy_unsupported",
+            "$.passes.base",
+            "Regional generation requires the base pass policy to be 'regional'",
+        )
+    if (
+        plan.engine.options.get("hires_enabled", False)
+        and plan.passes.hires != "recompile"
+    ):
+        _issue(
+            issues,
+            "passes.hires.policy_unsupported",
+            "$.passes.hires",
+            "An enabled Regional high-resolution pass requires the 'recompile' policy",
+        )
 
     enabled_count = sum(region.enabled for region in plan.regions)
     if enabled_count > max_enabled_regions:

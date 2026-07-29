@@ -39,6 +39,15 @@ DEFAULT_GENERATION_OPTIONS = {
     "batch_count": 1,
     "batch_size": 1,
     "seed": -1,
+    "hires_enabled": False,
+    "hires_scale": 2.0,
+    "hires_upscaler": "Latent",
+    "hires_steps": 0,
+    "hires_denoising_strength": 0.6,
+    "hires_width": 0,
+    "hires_height": 0,
+    "hires_cfg_scale": 6.0,
+    "hires_distilled_cfg_scale": 3.0,
 }
 
 MAX_EDITOR_POLYGON_POINTS = 1024

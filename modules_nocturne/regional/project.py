@@ -4,6 +4,7 @@ import base64
 import binascii
 import json
 import os
+import re
 import tempfile
 import zlib
 from dataclasses import dataclass, field
@@ -28,6 +29,9 @@ SIDECAR_SUFFIX = ".nocturne.json"
 EMBEDDED_DATA_KEY = "Nocturne Regional Data"
 MAX_DECOMPRESSED_METADATA_BYTES = MAX_JSON_BYTES
 MAX_METADATA_IMAGE_BYTES = 128 * 1024 * 1024
+_EMBEDDED_INFOTEXT_PATTERN = re.compile(
+    rf"(?:^|,\s*|\n){re.escape(EMBEDDED_DATA_KEY)}:\s*([A-Za-z0-9+/]+={{0,2}})(?=,\s|\s*$)"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,6 +459,12 @@ def restore_metadata_file(path: str | Path) -> RestoredMetadataFile:
     if sum(len(key) + len(value) for key, value in fields.items()) > MAX_JSON_BYTES * 2:
         raise PlanError("metadata.fields.too_large", "$", "PNG text metadata exceeds the safety limit")
 
+    parameters = fields.get("parameters", "")
+    if EMBEDDED_DATA_KEY not in fields and parameters:
+        embedded_match = _EMBEDDED_INFOTEXT_PATTERN.search(parameters)
+        if embedded_match is not None:
+            fields[EMBEDDED_DATA_KEY] = embedded_match.group(1)
+
     sidecar_document = None
     companion = sidecar_path_for(source)
     if EMBEDDED_DATA_KEY not in fields and companion.is_file():
@@ -468,7 +478,7 @@ def restore_metadata_file(path: str | Path) -> RestoredMetadataFile:
             raise PlanError("metadata.object_required", "$", "Companion metadata sidecar must contain an object")
 
     if EMBEDDED_DATA_KEY not in fields and sidecar_document is None:
-        if any(key.startswith("Nocturne Regional ") for key in fields):
+        if any(key.startswith("Nocturne Regional ") for key in fields) or "Nocturne Regional " in parameters:
             raise PlanError(
                 "metadata.summary_only",
                 "$",

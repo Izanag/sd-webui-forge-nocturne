@@ -255,7 +255,6 @@ class StrictSD15Adapter:
     def unsupported_fields(self) -> frozenset[str]:
         return frozenset(
             {
-                "passes.hires",
                 "passes.refiner",
                 "composition.uncovered_policy.transparent",
             }

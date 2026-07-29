@@ -145,6 +145,15 @@ def _snapshot(plan, selected_id, *, status=None, raw_value=None):
         gr.update(value=options.get("batch_size", 1)),
         gr.update(value=options.get("seed", -1)),
         _engine_component_update(plan.engine.requested),
+        gr.update(value=options.get("hires_enabled", False)),
+        gr.update(value=options.get("hires_upscaler", "Latent")),
+        gr.update(value=options.get("hires_steps", 0)),
+        gr.update(value=options.get("hires_denoising_strength", 0.6)),
+        gr.update(value=options.get("hires_scale", 2.0)),
+        gr.update(value=options.get("hires_width", 0)),
+        gr.update(value=options.get("hires_height", 0)),
+        gr.update(value=options.get("hires_distilled_cfg_scale", 3.0)),
+        gr.update(value=options.get("hires_cfg_scale", options.get("cfg_scale", 6.0))),
     )
     return (*common, *plan_controls, *_selected_updates(plan, selected, report), *_operation_updates(selected))
 
@@ -498,11 +507,21 @@ def _regional_generate_function(
     else:
         gallery = gr.update(value=None, visible=False)
         player = gr.update(value=processed.video_path, visible=True)
+    engine_choices, engine_interactive, capability_text = _capability_values()
+    requested_engine = authorized.plan.engine.requested
+    if requested_engine not in engine_choices:
+        requested_engine = "auto"
     return (
         gallery,
         player,
         generation_info,
         plaintext_to_html(processed.info),
+        gr.update(
+            choices=engine_choices,
+            value=requested_engine,
+            interactive=engine_interactive,
+        ),
+        gr.update(value=capability_text),
         plaintext_to_html(processed.comments, classname="comments"),
     )
 
@@ -777,8 +796,20 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         info="Scroll the canvas to pan. Zoom and pan do not change normalised plan coordinates.",
                     )
                     with gr.Row():
-                        canvas_width = gr.Slider(64, 2048, value=1024, step=8, label="Canvas width")
-                        canvas_height = gr.Slider(64, 2048, value=1024, step=8, label="Canvas height")
+                        canvas_width = gr.Slider(
+                            64,
+                            2048,
+                            value=1024,
+                            step=int(shared.opts.res_step),
+                            label="Canvas width",
+                        )
+                        canvas_height = gr.Slider(
+                            64,
+                            2048,
+                            value=1024,
+                            step=int(shared.opts.res_step),
+                            label="Canvas height",
+                        )
 
                     with gr.Accordion("Selected region", open=True):
                         region_name = gr.Textbox(label="Name", interactive=False)
@@ -935,12 +966,75 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         with gr.Row():
                             batch_count = gr.Slider(1, 128, value=1, step=1, label="Batch count")
                             batch_size = gr.Slider(1, 8, value=1, step=1, label="Batch size")
-                        gr.Checkbox(
-                            label="Hires / refiner",
-                            value=False,
-                            interactive=False,
-                            info="Unavailable until the active adapter proves pass support.",
-                        )
+                        with gr.Accordion("Hires", open=False):
+                            hires_enabled = gr.Checkbox(
+                                label="Enable high-resolution pass",
+                                value=False,
+                            )
+                            with gr.Row():
+                                hires_upscaler = gr.Dropdown(
+                                    choices=list(
+                                        dict.fromkeys(
+                                            [
+                                                *shared.latent_upscale_modes,
+                                                *[upscaler.name for upscaler in shared.sd_upscalers],
+                                            ]
+                                        )
+                                    ),
+                                    value=shared.latent_upscale_default_mode,
+                                    label="Upscaler",
+                                )
+                                hires_steps = gr.Slider(
+                                    0,
+                                    150,
+                                    value=0,
+                                    step=1,
+                                    label="Hires steps",
+                                )
+                                hires_denoising_strength = gr.Slider(
+                                    0.0,
+                                    1.0,
+                                    value=0.6,
+                                    step=0.05,
+                                    label="Denoising strength",
+                                )
+                            with gr.Row():
+                                hires_scale = gr.Slider(
+                                    1.0,
+                                    4.0,
+                                    value=2.0,
+                                    step=0.05,
+                                    label="Upscale by",
+                                )
+                                hires_width = gr.Slider(
+                                    0,
+                                    4096,
+                                    value=0,
+                                    step=int(shared.opts.res_step),
+                                    label="Resize width to",
+                                )
+                                hires_height = gr.Slider(
+                                    0,
+                                    4096,
+                                    value=0,
+                                    step=int(shared.opts.res_step),
+                                    label="Resize height to",
+                                )
+                            with gr.Row():
+                                hires_distilled_cfg_scale = gr.Slider(
+                                    1.0,
+                                    24.0,
+                                    value=3.0,
+                                    step=0.5,
+                                    label="Hires Distilled CFG scale",
+                                )
+                                hires_cfg_scale = gr.Slider(
+                                    1.0,
+                                    24.0,
+                                    value=6.0,
+                                    step=0.5,
+                                    label="Hires CFG scale",
+                                )
                     plan_hash_display = gr.Markdown(f"`{plan_hash(initial_plan)}`", label="Plan hash")
 
                     with gr.Accordion("Advanced plan details", open=False):
@@ -1031,6 +1125,15 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             batch_size,
             seed,
             engine_choice,
+            hires_enabled,
+            hires_upscaler,
+            hires_steps,
+            hires_denoising_strength,
+            hires_scale,
+            hires_width,
+            hires_height,
+            hires_distilled_cfg_scale,
+            hires_cfg_scale,
             *selected_components,
             duplicate_button,
             delete_button,
@@ -1081,7 +1184,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             return (*live_state(snapshot), snapshot[6])
 
         def region_live_state(snapshot):
-            return (*canvas_live_state(snapshot), snapshot[7], snapshot[8], *snapshot[37:48])
+            return (*canvas_live_state(snapshot), snapshot[7], snapshot[8], *snapshot[46:57])
 
         def add_action(plan_json, selected_id, mode):
             return _mutate(
@@ -1122,7 +1225,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 selected_id,
                 lambda plan, selected: (update_global_prompts(plan, positive, negative), selected),
             )
-            return (*result[:9], *result[21:])
+            return (*result[:9], *result[30:])
 
         def canvas_action(plan_json, selected_id, width, height):
             snapshot = _mutate(
@@ -1132,7 +1235,26 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             )
             return canvas_live_state(snapshot)
 
-        def generation_action(plan_json, selected_id, sampler_name, scheduler_name, step_count, cfg, count, size, base_seed):
+        def generation_action(
+            plan_json,
+            selected_id,
+            sampler_name,
+            scheduler_name,
+            step_count,
+            cfg,
+            count,
+            size,
+            base_seed,
+            enable_hires,
+            hires_upscaler_name,
+            hires_step_count,
+            hires_denoising,
+            hires_resize_scale,
+            hires_resize_width,
+            hires_resize_height,
+            hires_distilled_cfg,
+            hires_cfg,
+        ):
             snapshot = _mutate(
                 plan_json,
                 selected_id,
@@ -1146,6 +1268,15 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                         batch_count=int(count),
                         batch_size=int(size),
                         seed=int(base_seed),
+                        hires_enabled=bool(enable_hires),
+                        hires_upscaler=str(hires_upscaler_name),
+                        hires_steps=int(hires_step_count),
+                        hires_denoising_strength=float(hires_denoising),
+                        hires_scale=float(hires_resize_scale),
+                        hires_width=int(hires_resize_width),
+                        hires_height=int(hires_resize_height),
+                        hires_distilled_cfg_scale=float(hires_distilled_cfg),
+                        hires_cfg_scale=float(hires_cfg),
                     ),
                     selected,
                 ),
@@ -1390,7 +1521,24 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 trigger_mode="always_last",
             )
 
-        generation_inputs = [sampler, scheduler, steps, cfg_scale, batch_count, batch_size, seed]
+        generation_inputs = [
+            sampler,
+            scheduler,
+            steps,
+            cfg_scale,
+            batch_count,
+            batch_size,
+            seed,
+            hires_enabled,
+            hires_upscaler,
+            hires_steps,
+            hires_denoising_strength,
+            hires_scale,
+            hires_width,
+            hires_height,
+            hires_distilled_cfg_scale,
+            hires_cfg_scale,
+        ]
         for component in generation_inputs:
             component.input(
                 generation_action,
@@ -1427,7 +1575,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
         generation_event = dict(
             fn=call_queue.wrap_gradio_gpu_call(
                 _regional_generate,
-                extra_outputs=[None, None, "", ""],
+                extra_outputs=[None, None, "", "", gr.skip(), gr.skip()],
             ),
             _js="submit_regional",
             inputs=[
@@ -1441,6 +1589,8 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 output_panel.player,
                 output_panel.generation_info,
                 output_panel.infotext,
+                engine_choice,
+                capability_status,
                 output_panel.html_log,
             ],
             show_progress=False,

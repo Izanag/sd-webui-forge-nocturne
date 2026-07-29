@@ -304,13 +304,10 @@ class RegionalRuntime:
             raise RuntimeError("Regional tensors require an active batch")
         return self.own_resource(factory(self._active_batch), releaser=releaser)
 
-    def end_batch(self) -> None:
-        if self._active_batch is None and not self._resources:
-            return
+    def _release_resources(self) -> None:
         resources = tuple(reversed(self._resources))
         self._resources.clear()
         self._installed_engine = None
-        self._active_batch = None
         first_error: BaseException | None = None
         for resource in resources:
             try:
@@ -320,6 +317,48 @@ class RegionalRuntime:
                     first_error = error
         if first_error is not None:
             raise first_error
+
+    def transition_pass(self, *, width: int, height: int, pass_name: str) -> RegionalBatchCompilation:
+        """Retain prompts and seeds while rebuilding pass-specific masks and conditioning."""
+
+        if self._closed:
+            raise RuntimeError("A closed Regional runtime cannot transition passes")
+        if self._active_batch is None:
+            raise RuntimeError("A Regional pass transition requires an active batch")
+        if (
+            isinstance(width, bool)
+            or isinstance(height, bool)
+            or not isinstance(width, int)
+            or not isinstance(height, int)
+            or width < 1
+            or height < 1
+        ):
+            raise ValueError("Regional pass dimensions must be positive integers")
+        if not pass_name or pass_name == self._active_batch.context.pass_name:
+            raise ValueError("Regional pass transition requires a new non-empty pass name")
+
+        self._release_resources()
+        context = replace(
+            self._active_batch.context,
+            width=width,
+            height=height,
+            pass_name=pass_name,
+        )
+        self._active_batch = replace(
+            self._active_batch,
+            context=context,
+            masks=(),
+            conditioning=None,
+        )
+        return self._active_batch
+
+    def end_batch(self) -> None:
+        if self._active_batch is None and not self._resources:
+            return
+        try:
+            self._release_resources()
+        finally:
+            self._active_batch = None
 
     def close(self) -> None:
         if self._closed:

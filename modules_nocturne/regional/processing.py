@@ -29,6 +29,14 @@ _CANONICAL_PROCESSING_FIELDS = frozenset(
         "n_iter",
         "seed",
         "enable_hr",
+        "denoising_strength",
+        "hr_scale",
+        "hr_upscaler",
+        "hr_second_pass_steps",
+        "hr_resize_x",
+        "hr_resize_y",
+        "hr_cfg",
+        "hr_distilled_cfg",
     }
 )
 
@@ -58,7 +66,15 @@ def forge_fields_from_plan(
             "batch_size": int(options.get("batch_size", 1)),
             "n_iter": int(options.get("batch_count", 1)),
             "seed": int(options.get("seed", -1)),
-            "enable_hr": False,
+            "enable_hr": bool(options.get("hires_enabled", False)),
+            "denoising_strength": float(options.get("hires_denoising_strength", 0.6)),
+            "hr_scale": float(options.get("hires_scale", 2.0)),
+            "hr_upscaler": str(options.get("hires_upscaler", "Latent")),
+            "hr_second_pass_steps": int(options.get("hires_steps", 0)),
+            "hr_resize_x": int(options.get("hires_width", 0)),
+            "hr_resize_y": int(options.get("hires_height", 0)),
+            "hr_cfg": float(options.get("hires_cfg_scale", options.get("cfg_scale", 6.0))),
+            "hr_distilled_cfg": float(options.get("hires_distilled_cfg_scale", 3.0)),
         }
     )
 
@@ -98,6 +114,7 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         if conflicts:
             names = ", ".join(sorted(conflicts))
             raise TypeError(f"Canonical Regional processing fields cannot be overridden: {names}")
+        forge_fields.setdefault("hr_additional_modules", ["Use same choices"])
         instance = cls(
             **forge_fields_from_plan(authorized_plan),
             **forge_fields,
@@ -129,6 +146,7 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         if conflicts:
             names = ", ".join(sorted(conflicts))
             raise TypeError(f"Canonical Regional processing fields cannot be overridden: {names}")
+        forge_fields.setdefault("hr_additional_modules", ["Use same choices"])
         instance = cls(
             **forge_fields_from_plan(plan),
             **forge_fields,
@@ -155,21 +173,13 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         self.regional_plan = plan
         expected = forge_fields_from_plan(plan)
         mismatches = tuple(
-            name
-            for name in _CANONICAL_PROCESSING_FIELDS
-            if name != "enable_hr" and getattr(self, name) != expected[name]
+            name for name in _CANONICAL_PROCESSING_FIELDS if getattr(self, name) != expected[name]
         )
         if mismatches:
             raise PlanError(
                 "processing.canonical_mismatch",
                 "$",
                 f"Forge processing fields differ from the canonical plan: {', '.join(sorted(mismatches))}",
-            )
-        if self.enable_hr:
-            raise PlanError(
-                "passes.hires.unsupported",
-                "$.passes.hires",
-                "Hires processing is unavailable until the active Regional adapter proves pass support",
             )
         self.regional_final_prompts = []
         self.regional_resolved_seeds = []
@@ -317,7 +327,41 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         unconditional_conditioning,
         pass_name,
     ):
-        if pass_name != "base":
+        if pass_name == "hires":
+            if self.regional_plan.passes.hires != "recompile":
+                raise PlanError(
+                    "passes.hires.policy_unsupported",
+                    "$.passes.hires",
+                    f"Regional hires does not support policy {self.regional_plan.passes.hires!r}",
+                )
+            if self.regional_runtime is None:
+                raise RuntimeError("Regional runtime was not initialized")
+            self.regional_runtime.transition_pass(
+                width=int(self.hr_upscale_to_x),
+                height=int(self.hr_upscale_to_y),
+                pass_name="hires",
+            )
+            if self.runtime_installer is not None and getattr(
+                self.runtime_installer, "requires_conditioning", False
+            ):
+                hires_steps = int(self.hr_second_pass_steps or self.steps)
+                hires_conditioning = self.regional_runtime.build_conditioning(
+                    model_context=self.sd_model,
+                    steps=int(self.steps),
+                    hires_steps=hires_steps,
+                    width=int(self.hr_upscale_to_x),
+                    height=int(self.hr_upscale_to_y),
+                    distilled_cfg_scale=float(self.hr_distilled_cfg),
+                )
+                self.regional_final_prompts.extend(hires_conditioning.final_prompts)
+            self.extra_generation_params["Nocturne Regional Base Engine"] = (
+                self.authorized_plan.engine.engine_id
+            )
+            self.extra_generation_params["Nocturne Regional Hires Engine"] = (
+                self.authorized_plan.engine.engine_id
+            )
+            self.extra_generation_params["Nocturne Regional Hires Policy"] = "recompile"
+        elif pass_name != "base":
             raise PlanError(
                 "passes.runtime.unsupported",
                 "$.passes",
