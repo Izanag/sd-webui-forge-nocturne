@@ -495,10 +495,15 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
             raise RuntimeError("Regional sampling requires a runtime engine installer")
         if self.regional_runtime is None:
             raise RuntimeError("Regional runtime was not initialized")
-        self.regional_runtime.install_engine(
+        installed_engine = self.regional_runtime.install_engine(
             installer=self.runtime_installer,
             model_context=self.sd_model,
         )
+        attention_backend_id = getattr(installed_engine, "attention_backend_id", None)
+        if attention_backend_id:
+            self.extra_generation_params["Nocturne Regional Attention Backend"] = (
+                attention_backend_id
+            )
 
     def sample(self, conditioning, unconditional_conditioning, seeds, subseeds, subseed_strength, prompts):
         if self.regional_runtime is None or self.regional_runtime.active_batch is None:

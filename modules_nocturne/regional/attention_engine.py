@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from typing import Any, Callable, Protocol
 
 from modules_nocturne.regional.adapters.sd15 import AttentionBlockSpec, sd15_adapter
@@ -80,6 +81,45 @@ def _require_reliable_schedule_sampler(sampler_name: str) -> None:
             "$.engine.options.sampler",
             "Scheduled Regional prompts and guidance require a sampler with verified sigma progress",
         )
+
+
+def _validated_attention_backend(
+    attention_function: Callable | None = None,
+) -> tuple[Callable, str]:
+    if attention_function is None:
+        from backend.nn.unet import attention_function
+
+    if not callable(attention_function):
+        raise PlanError(
+            "engine.attention_backend.unsupported",
+            "$.engine",
+            "The selected attention backend is not callable",
+        )
+    try:
+        inspect.signature(attention_function).bind(
+            object(),
+            object(),
+            object(),
+            1,
+            None,
+        )
+    except (TypeError, ValueError) as error:
+        raise PlanError(
+            "engine.attention_backend.unsupported",
+            "$.engine",
+            "The selected attention backend cannot accept Regional query, key and value branches",
+        ) from error
+    module = getattr(
+        attention_function,
+        "__module__",
+        type(attention_function).__module__,
+    )
+    name = getattr(
+        attention_function,
+        "__qualname__",
+        getattr(attention_function, "__name__", type(attention_function).__qualname__),
+    )
+    return attention_function, f"{module}.{name}"
 
 
 class AttentionDecompositionEngine:
@@ -194,6 +234,9 @@ class RegionalAttentionRuntimeInstaller:
                 "$.engine",
                 "Regional attention working-memory budget must be between 16 and 2048 MiB",
             )
+        attention_function, attention_backend_id = _validated_attention_backend(
+            self.attention_function
+        )
 
         previous_unet = model_context.forge_objects.unet
         cloned_unet = previous_unet.clone()
@@ -212,7 +255,8 @@ class RegionalAttentionRuntimeInstaller:
                 if region.enabled
             },
             image_indices=batch.context.image_indices,
-            attention_function=self.attention_function,
+            attention_function=attention_function,
+            attention_backend_id=attention_backend_id,
             attention_memory_budget_bytes=memory_budget_mb * 1024 * 1024,
         )
         try:
@@ -245,6 +289,7 @@ class InstalledAttentionDecomposition:
         guidance_by_region,
         image_indices,
         attention_function: Callable | None,
+        attention_backend_id: str | None = None,
         attention_memory_budget_bytes: int = 64 * 1024 * 1024,
     ) -> None:
         self.model_context = model_context
@@ -258,6 +303,10 @@ class InstalledAttentionDecomposition:
         self.guidance_by_region = dict(guidance_by_region)
         self.image_indices = tuple(image_indices)
         self.attention_function = attention_function
+        self.attention_backend_id = attention_backend_id or (
+            f"{getattr(attention_function, '__module__', type(attention_function).__module__)}."
+            f"{getattr(attention_function, '__qualname__', type(attention_function).__qualname__)}"
+        )
         self.attention_memory_budget_bytes = int(attention_memory_budget_bytes)
         self.conditioning: RegionalConditioningBatch | None = None
         self._has_prompt_schedules = False
@@ -310,11 +359,7 @@ class InstalledAttentionDecomposition:
         )
 
     def _attention(self):
-        if self.attention_function is not None:
-            return self.attention_function
-        from backend.nn.unet import attention_function
-
-        return attention_function
+        return self.attention_function
 
     def _materialized_masks(self, block: AttentionBlockSpec, q):
         import torch
@@ -463,6 +508,7 @@ class InstalledAttentionDecomposition:
             self.masks_by_block = {}
             self.guidance_by_region = {}
             self.adapter = None
+            self.attention_function = None
             self.model_context = None
             self.previous_unet = None
             self.cloned_unet = None

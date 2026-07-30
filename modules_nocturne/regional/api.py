@@ -234,11 +234,7 @@ class RegionalApi:
 
         from fastapi import HTTPException
 
-        from modules import processing, shared
-        from modules.api.api import encode_pil_to_base64
         from modules.progress import add_task_to_queue, create_task_id, finish_task, start_task
-        from modules_nocturne.regional.processing import StableDiffusionProcessingRegional
-        from modules_nocturne.regional.project import build_metadata, save_sidecar
 
         try:
             plan = load_plan(request.plan)
@@ -246,13 +242,19 @@ class RegionalApi:
             raise HTTPException(status_code=422, detail=error.issue.as_dict()) from error
 
         task_id = request.force_task_id or create_task_id("regional")
-        add_task_to_queue(task_id)
         lock = self.queue_lock
         if lock is None:
             raise HTTPException(status_code=500, detail="Regional generation queue is unavailable")
+        add_task_to_queue(task_id)
 
         try:
             with lock:
+                from modules import processing, shared
+                from modules_nocturne.regional.processing import (
+                    StableDiffusionProcessingRegional,
+                )
+                from modules_nocturne.regional.project import build_metadata, save_sidecar
+
                 start_task(task_id)
                 shared.state.begin(job="regional")
                 try:
@@ -302,14 +304,15 @@ class RegionalApi:
         finally:
             finish_task(task_id)
 
-        images = (
-            [
+        if request.send_images:
+            from modules.api.api import encode_pil_to_base64
+
+            images = [
                 encode_pil_to_base64(image).decode("ascii")
                 for image in processed.images + processed.extra_images
             ]
-            if request.send_images
-            else []
-        )
+        else:
+            images = []
         warnings = [
             _issue_response(issue)
             for issue in authorized.validation.issues

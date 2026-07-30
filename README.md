@@ -4,7 +4,23 @@
 An AGPL-3.0 fork of Stable Diffusion WebUI Forge Neo with a native Regional generation workspace.
 </p>
 
-Nocturne currently includes an isolated Regional script context, conservative native settings, and a top-level Regional workspace shell. Regional sampling remains disabled until supported runtime components are available.
+Nocturne includes a native Regional workspace with restorable plans, mask editing and attention-decomposition sampling for verified SD 1.5 and SDXL checkpoints.
+
+## Regional compatibility
+
+Status meanings: **Production** is the normal supported path, **Advanced** is supported with the stated limitation, **Experimental** requires an explicit opt-in, and **Unsupported** is blocked.
+
+| Area | Status | Current support |
+| --- | --- | --- |
+| SD 1.5 | **Production** | Regional attention decomposition, global LoRA/extra networks, global ControlNet units, hires recompilation, low-VRAM and no-VRAM |
+| SDXL | **Production** | Regional attention decomposition, global LoRA/extra networks, global ControlNet units and low-VRAM |
+| SDXL hires | **Advanced** | Regional masks and prompts are recompiled for the hires pass |
+| SDXL refiner | **Advanced** | The base pass is Regional; the refiner runs globally after explicit approval |
+| Scripts | **Advanced** | Verified scripts use an isolated Regional runner; unverified scripts require an explicit setting and generation-time approval |
+| Attention backend | **Production** | Forge's PyTorch attention backend is verified; an incompatible selected backend is blocked before patch installation |
+| Anima and other model families | **Unsupported** | No Regional adapter is advertised until that family has its own verified implementation |
+
+LoRA tags and ControlNet units currently affect the whole generation, including when a LoRA tag is written in a local prompt. Region-local LoRA and region-local ControlNet routing are not claimed.
 
 The current Forge Neo base is [`ff7b9ff5aca35b1a69ca8bd0f1f5def4ee6a0802`](https://github.com/Haoming02/sd-webui-forge-classic/commit/ff7b9ff5aca35b1a69ca8bd0f1f5def4ee6a0802).
 
