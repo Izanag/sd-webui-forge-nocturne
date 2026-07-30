@@ -9,9 +9,14 @@ from typing import Any, Mapping
 from modules import processing, scripts
 from modules_nocturne.regional.errors import PlanError
 from modules_nocturne.regional.capabilities import capability_service
+from modules_nocturne.regional.forge_prompts import (
+    merge_extra_network_data,
+    parse_forge_extra_networks,
+)
 from modules_nocturne.regional.generation import AuthorizedRegionalPlan, authorize_generation
 from modules_nocturne.regional.model import RegionalGenerationPlan
 from modules_nocturne.regional.project import MetadataBundle, build_metadata
+from modules_nocturne.regional.prompts import compile_prompt_plan
 from modules_nocturne.regional.runtime import RegionalBatchContext, RegionalRuntime, RegionalRuntimeInstaller
 
 
@@ -285,6 +290,43 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
             seeds=tuple(self.seeds),
             subseeds=tuple(self.subseeds),
         )
+
+    def parse_extra_network_prompts(self):
+        """Include local prompt tags in Forge's generation-global activation."""
+
+        result = super().parse_extra_network_prompts()
+        base_seed = int(self.seeds[0]) if self.seeds else int(self.seed)
+        parsed = parse_forge_extra_networks(
+            compile_prompt_plan(
+                self.regional_plan,
+                base_seed=base_seed,
+                batch_index=int(self.iteration),
+            )
+        )
+        merged = merge_extra_network_data(
+            self.extra_network_data or {},
+            parsed.extra_network_data,
+        )
+        lora_parameters: dict[str, tuple[Any, ...]] = {}
+        for parameter in merged.get("lora", ()):
+            if not parameter.items:
+                continue
+            lora_name = str(parameter.items[0])
+            signature = tuple(parameter.items)
+            previous = lora_parameters.setdefault(lora_name, signature)
+            if previous != signature:
+                raise PlanError(
+                    "extra_network.global_parameter_conflict",
+                    "$.regions",
+                    f"LoRA {lora_name!r} has conflicting generation-global parameters",
+                )
+        self.extra_network_data = merged
+        if self.enable_hr:
+            self.hr_extra_network_data = merge_extra_network_data(
+                self.hr_extra_network_data or {},
+                parsed.extra_network_data,
+            )
+        return result
 
     def setup_conds(self):
         self._initialize_authorized_runtime()

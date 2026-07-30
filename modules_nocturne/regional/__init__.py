@@ -66,6 +66,7 @@ from modules_nocturne.regional.forge_prompts import (
     ForgeExtraNetworkParse,
     ForgePromptSchedule,
     ForgeScheduleEntry,
+    merge_extra_network_data,
     parse_forge_extra_networks,
     resolve_forge_schedules,
 )
@@ -195,6 +196,7 @@ __all__ = [
     "load_plan",
     "load_project",
     "mask_cache",
+    "merge_extra_network_data",
     "new_region",
     "plan_hash",
     "parse_forge_extra_networks",

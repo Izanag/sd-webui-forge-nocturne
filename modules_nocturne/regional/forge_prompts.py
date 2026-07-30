@@ -32,6 +32,22 @@ class ForgeExtraNetworkParse:
         object.__setattr__(self, "extra_network_data", MappingProxyType(dict(self.extra_network_data)))
 
 
+def merge_extra_network_data(*collections: Mapping[str, tuple[Any, ...] | list[Any]]) -> dict[str, list[Any]]:
+    """Merge Forge extra-network parameters without activating duplicate tags."""
+
+    merged: dict[str, list[Any]] = {}
+    seen: set[tuple[str, tuple[Any, ...]]] = set()
+    for collection in collections:
+        for network_name, parameters in collection.items():
+            for parameter in parameters:
+                key = (network_name, tuple(parameter.items))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.setdefault(network_name, []).append(parameter)
+    return merged
+
+
 def _all_prompts(compiled: CompiledPromptPlan) -> tuple[CompiledPromptText, ...]:
     prompts = [compiled.global_positive, compiled.global_negative]
     for region in compiled.regions:
@@ -74,18 +90,12 @@ def parse_forge_extra_networks(compiled: CompiledPromptPlan) -> ForgeExtraNetwor
 
     positive = [compiled.global_positive, *(region.positive for region in compiled.regions)]
     cleaned: dict[PromptOwner, str] = {}
-    deduplicated: dict[str, list[Any]] = {}
-    seen: set[tuple[str, tuple[Any, ...]]] = set()
+    parsed_collections: list[Mapping[str, list[Any]]] = []
     for prompt in positive:
         cleaned_text, parsed = extra_networks.parse_prompt(prompt.text)
         cleaned[prompt.owner] = cleaned_text
-        for network_name, parameters in parsed.items():
-            for parameter in parameters:
-                key = (network_name, tuple(parameter.items))
-                if key in seen:
-                    continue
-                seen.add(key)
-                deduplicated.setdefault(network_name, []).append(parameter)
+        parsed_collections.append(parsed)
+    deduplicated = merge_extra_network_data(*parsed_collections)
     return ForgeExtraNetworkParse(
         cleaned_positive_prompts=cleaned,
         extra_network_data={name: tuple(parameters) for name, parameters in deduplicated.items()},

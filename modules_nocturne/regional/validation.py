@@ -37,6 +37,30 @@ MAX_BATCH_SIZE = 8
 MIN_CFG_SCALE = 1.0
 MAX_CFG_SCALE = 24.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+UNSUPPORTED_REGION_LOCAL_NETWORK_FIELDS = frozenset(
+    {
+        "extra_network",
+        "extra_networks",
+        "local_lora",
+        "local_loras",
+        "lora",
+        "loras",
+    }
+)
+SUPPORTED_REFINER_POLICIES = frozenset({"disabled", "preserve_when_supported"})
+UNSUPPORTED_REGION_LOCAL_CONDITIONING_FIELDS = frozenset(
+    {
+        "control_net",
+        "controlnet",
+        "controlnets",
+        "ip_adapter",
+        "ip_adapters",
+        "local_controlnet",
+        "local_controlnets",
+        "reference",
+        "references",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,6 +310,13 @@ def validate_plan(
             "$.passes.hires",
             "An enabled Regional high-resolution pass requires the 'recompile' policy",
         )
+    if plan.passes.refiner not in SUPPORTED_REFINER_POLICIES:
+        _issue(
+            issues,
+            "passes.refiner.policy_unsupported",
+            "$.passes.refiner",
+            "Regional generation does not support a separate refiner pass",
+        )
 
     enabled_count = sum(region.enabled for region in plan.regions)
     if enabled_count > max_enabled_regions:
@@ -301,6 +332,22 @@ def validate_plan(
     seen_ids = set()
     for index, region in enumerate(plan.regions):
         path = f"$.regions[{index}]"
+        for field_name in sorted(UNSUPPORTED_REGION_LOCAL_NETWORK_FIELDS.intersection(region.extra)):
+            _issue(
+                issues,
+                "region.local_extra_network.unsupported",
+                f"{path}.{field_name}",
+                "Structured region-local extra networks are not supported; prompt tags apply to the whole generation",
+            )
+        for field_name in sorted(
+            UNSUPPORTED_REGION_LOCAL_CONDITIONING_FIELDS.intersection(region.extra)
+        ):
+            _issue(
+                issues,
+                "region.local_conditioning.unsupported",
+                f"{path}.{field_name}",
+                "Region-local ControlNet and reference conditioning are not supported",
+            )
         if region.id in seen_ids:
             _issue(issues, "region.id.duplicate", f"{path}.id", f"Region UUID {region.id} is duplicated")
         seen_ids.add(region.id)
