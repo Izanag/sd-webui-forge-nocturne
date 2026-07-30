@@ -47,7 +47,10 @@ UNSUPPORTED_REGION_LOCAL_NETWORK_FIELDS = frozenset(
         "loras",
     }
 )
-SUPPORTED_REFINER_POLICIES = frozenset({"disabled", "preserve_when_supported"})
+SUPPORTED_REFINER_POLICIES = frozenset(
+    {"disabled", "global_refine", "preserve_when_supported"}
+)
+SUPPORTED_REFINER_SWITCH_MODES = frozenset({"sigma", "steps"})
 UNSUPPORTED_REGION_LOCAL_CONDITIONING_FIELDS = frozenset(
     {
         "control_net",
@@ -155,7 +158,11 @@ def _validate_generation_options(plan: RegionalGenerationPlan, issues: list[Vali
                 f"Generation {name} must be an integer between {minimum} and {maximum}",
             )
 
-    for name in ("cfg_scale", "hires_cfg_scale", "hires_distilled_cfg_scale"):
+    for name in (
+        "cfg_scale",
+        "hires_cfg_scale",
+        "hires_distilled_cfg_scale",
+    ):
         cfg_scale = options.get(name)
         if cfg_scale is not None and (
             isinstance(cfg_scale, bool)
@@ -177,6 +184,71 @@ def _validate_generation_options(plan: RegionalGenerationPlan, issues: list[Vali
             "generation.hires_enabled.invalid",
             "$.engine.options.hires_enabled",
             "Hires enabled must be a boolean",
+        )
+
+    refiner_enabled = options.get("refiner_enabled")
+    if refiner_enabled is not None and not isinstance(refiner_enabled, bool):
+        _issue(
+            issues,
+            "generation.refiner_enabled.invalid",
+            "$.engine.options.refiner_enabled",
+            "Refiner enabled must be a boolean",
+        )
+    refiner_checkpoint = options.get("refiner_checkpoint")
+    if refiner_checkpoint is not None and (
+        not isinstance(refiner_checkpoint, str)
+        or len(refiner_checkpoint) > 256
+        or (bool(refiner_enabled) and not refiner_checkpoint.strip())
+    ):
+        _issue(
+            issues,
+            "generation.refiner_checkpoint.invalid",
+            "$.engine.options.refiner_checkpoint",
+            "An enabled refiner requires a checkpoint name of at most 256 characters",
+        )
+    refiner_switch_at = options.get("refiner_switch_at")
+    if refiner_switch_at is not None and (
+        isinstance(refiner_switch_at, bool)
+        or not isinstance(refiner_switch_at, (int, float))
+        or not math.isfinite(float(refiner_switch_at))
+        or not 0.0 < float(refiner_switch_at) <= 1.0
+    ):
+        _issue(
+            issues,
+            "generation.refiner_switch_at.out_of_range",
+            "$.engine.options.refiner_switch_at",
+            "Refiner switch threshold must be greater than 0 and at most 1",
+        )
+    refiner_cfg = options.get("refiner_cfg_scale")
+    if refiner_cfg is not None and (
+        isinstance(refiner_cfg, bool)
+        or not isinstance(refiner_cfg, (int, float))
+        or not math.isfinite(float(refiner_cfg))
+        or not 0.0 <= float(refiner_cfg) <= MAX_CFG_SCALE
+    ):
+        _issue(
+            issues,
+            "generation.refiner_cfg_scale.out_of_range",
+            "$.engine.options.refiner_cfg_scale",
+            f"Refiner CFG scale must be between 0 and {MAX_CFG_SCALE:g}",
+        )
+    refiner_switch_mode = options.get("refiner_switch_mode")
+    if (
+        refiner_switch_mode is not None
+        and refiner_switch_mode not in SUPPORTED_REFINER_SWITCH_MODES
+    ):
+        _issue(
+            issues,
+            "generation.refiner_switch_mode.invalid",
+            "$.engine.options.refiner_switch_mode",
+            "Refiner switch mode must be 'steps' or 'sigma'",
+        )
+    if refiner_enabled and refiner_checkpoint is None:
+        _issue(
+            issues,
+            "generation.refiner_checkpoint.missing",
+            "$.engine.options.refiner_checkpoint",
+            "An enabled refiner requires a checkpoint",
         )
 
     hires_scale = options.get("hires_scale")
@@ -315,7 +387,29 @@ def validate_plan(
             issues,
             "passes.refiner.policy_unsupported",
             "$.passes.refiner",
-            "Regional generation does not support a separate refiner pass",
+            "Unknown Regional refiner policy",
+        )
+    refiner_enabled = plan.engine.options.get("refiner_enabled", False)
+    if refiner_enabled and plan.engine.options.get("hires_enabled", False):
+        _issue(
+            issues,
+            "generation.refiner.hires_unsupported",
+            "$.engine.options",
+            "Forge does not support refiner switching during a high-resolution pass",
+        )
+    if refiner_enabled and plan.passes.refiner == "preserve_when_supported":
+        _issue(
+            issues,
+            "passes.refiner.adapter_unavailable",
+            "$.passes.refiner",
+            "The active adapters do not provide Regional prompt routing in the SDXL refiner",
+        )
+    if refiner_enabled and plan.passes.refiner == "disabled":
+        _issue(
+            issues,
+            "passes.refiner.disabled",
+            "$.passes.refiner",
+            "Disable the refiner control or select an available refiner policy",
         )
 
     enabled_count = sum(region.enabled for region in plan.regions)

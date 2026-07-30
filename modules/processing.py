@@ -426,6 +426,11 @@ class StableDiffusionProcessing:
             self.height,
             self.distilled_cfg_scale,
             getattr(self, "hr_distilled_cfg", None),
+            getattr(
+                getattr(shared.sd_model, "sd_checkpoint_info", None),
+                "filename",
+                None,
+            ),
             str(sd_models.model_data.forge_loading_parameters),
             opts.CLIP_stop_at_last_layers,
             opts.sdxl_crop_left,

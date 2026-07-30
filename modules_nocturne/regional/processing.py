@@ -13,7 +13,11 @@ from modules_nocturne.regional.forge_prompts import (
     merge_extra_network_data,
     parse_forge_extra_networks,
 )
-from modules_nocturne.regional.generation import AuthorizedRegionalPlan, authorize_generation
+from modules_nocturne.regional.generation import (
+    AuthorizedRegionalPlan,
+    authorize_generation,
+    required_plan_fallbacks,
+)
 from modules_nocturne.regional.model import RegionalGenerationPlan
 from modules_nocturne.regional.project import MetadataBundle, build_metadata
 from modules_nocturne.regional.prompts import compile_prompt_plan
@@ -42,8 +46,28 @@ _CANONICAL_PROCESSING_FIELDS = frozenset(
         "hr_resize_y",
         "hr_cfg",
         "hr_distilled_cfg",
+        "refiner_checkpoint",
+        "refiner_switch_at",
+        "refiner_cfg",
+        "refiner_use_steps",
     }
 )
+
+
+def _active_checkpoint_filename(fallback_model=None) -> str | None:
+    """Return the checkpoint backing Forge's active denoiser."""
+
+    from modules import shared
+
+    try:
+        model = shared.sd_model
+    except (AttributeError, ImportError):
+        model = fallback_model
+    return getattr(
+        getattr(model, "sd_checkpoint_info", None),
+        "filename",
+        None,
+    )
 
 
 def forge_fields_from_plan(
@@ -80,6 +104,28 @@ def forge_fields_from_plan(
             "hr_resize_y": int(options.get("hires_height", 0)),
             "hr_cfg": float(options.get("hires_cfg_scale", options.get("cfg_scale", 6.0))),
             "hr_distilled_cfg": float(options.get("hires_distilled_cfg_scale", 3.0)),
+            "refiner_checkpoint": (
+                str(options.get("refiner_checkpoint", ""))
+                if options.get("refiner_enabled", False)
+                else None
+            ),
+            "refiner_switch_at": (
+                float(options.get("refiner_switch_at", 0.8))
+                if options.get("refiner_enabled", False)
+                else None
+            ),
+            "refiner_cfg": (
+                (
+                    float(options.get("refiner_cfg_scale", 0.0))
+                    if float(options.get("refiner_cfg_scale", 0.0)) >= 1.0
+                    else None
+                )
+                if options.get("refiner_enabled", False)
+                else None
+            ),
+            "refiner_use_steps": (
+                options.get("refiner_switch_mode", "steps") == "steps"
+            ),
         }
     )
 
@@ -99,6 +145,8 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
     regional_engine_runtime_options: Mapping[str, Any] = field(init=False, repr=False)
     regional_final_prompts: list[Any] = field(init=False, repr=False)
     regional_resolved_seeds: list[Any] = field(init=False, repr=False)
+    refiner_use_steps: bool = field(default=False, repr=False)
+    regional_global_refiner_active: bool = field(default=False, init=False, repr=False)
 
     generation_context = scripts.GenerationContext.REGIONAL
     is_regional = True
@@ -226,6 +274,7 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
                     dict.fromkeys(
                         (
                             *report.expected_fallbacks,
+                            *required_plan_fallbacks(self.regional_plan),
                             *(
                                 fallback
                                 for engine in engines
@@ -332,6 +381,31 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         self._initialize_authorized_runtime()
         if self.regional_runtime is None:
             raise RuntimeError("Regional runtime was not initialized")
+        loaded_checkpoint = _active_checkpoint_filename(self.sd_model)
+        refiner_checkpoint = getattr(
+            self.refiner_checkpoint_info,
+            "filename",
+            None,
+        )
+        if (
+            refiner_checkpoint is not None
+            and loaded_checkpoint == refiner_checkpoint
+        ):
+            if self.regional_plan.passes.refiner != "global_refine":
+                raise PlanError(
+                    "passes.refiner.runtime_unsupported",
+                    "$.passes.refiner",
+                    "The loaded refiner has no authorized Regional adapter",
+                )
+            self.regional_runtime.end_batch()
+            self.regional_global_refiner_active = True
+            self.extra_generation_params.update(
+                {
+                    "Nocturne Regional Refiner Policy": "global_refine",
+                    "Nocturne Regional Refiner Engine": "global",
+                }
+            )
+            return super().setup_conds()
         self.regional_runtime.begin_batch(
             self._batch_context(),
             model_context=self.sd_model,

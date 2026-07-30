@@ -259,7 +259,7 @@ def apply_refiner(cfg_denoiser: "CFGDenoiser", x: torch.Tensor, sigma: torch.Ten
     if not (refiner_switch_at := cfg_denoiser.p.refiner_switch_at):
         return False
 
-    if opts.refiner_use_steps:
+    if getattr(cfg_denoiser.p, "refiner_use_steps", opts.refiner_use_steps):
         if refiner_switch_at > cfg_denoiser.step / cfg_denoiser.total_steps:
             return False
     else:

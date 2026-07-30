@@ -9,6 +9,22 @@ from modules_nocturne.regional.serialization import plan_hash
 from modules_nocturne.regional.validation import ValidationCapabilities, validate_plan
 
 
+GLOBAL_REFINER_FALLBACK = (
+    "SDXL refiner runs globally without Regional prompt routing"
+)
+
+
+def required_plan_fallbacks(plan: RegionalGenerationPlan) -> tuple[str, ...]:
+    """Return explicit compatibility compromises requested by a plan."""
+
+    if (
+        plan.engine.options.get("refiner_enabled", False)
+        and plan.passes.refiner == "global_refine"
+    ):
+        return (GLOBAL_REFINER_FALLBACK,)
+    return ()
+
+
 @dataclass(frozen=True, slots=True)
 class AuthorizedRegionalPlan:
     plan: RegionalGenerationPlan
@@ -49,7 +65,15 @@ def authorize_generation(
             f"Regional engine {requested!r} is not available for the loaded model",
         )
 
-    required_fallbacks = tuple(dict.fromkeys((*capability_report.expected_fallbacks, *engine.expected_fallbacks)))
+    required_fallbacks = tuple(
+        dict.fromkeys(
+            (
+                *capability_report.expected_fallbacks,
+                *engine.expected_fallbacks,
+                *required_plan_fallbacks(plan),
+            )
+        )
+    )
     missing_fallbacks = tuple(item for item in required_fallbacks if item not in accepted_fallbacks)
     if missing_fallbacks:
         raise PlanError(

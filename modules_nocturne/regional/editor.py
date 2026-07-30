@@ -20,6 +20,7 @@ from modules_nocturne.regional.model import (
     Canvas,
     EngineSelection,
     GlobalPrompt,
+    PassPolicy,
     Point,
     PolygonGeometry,
     RasterMaskGeometry,
@@ -48,6 +49,11 @@ DEFAULT_GENERATION_OPTIONS = {
     "hires_height": 0,
     "hires_cfg_scale": 6.0,
     "hires_distilled_cfg_scale": 3.0,
+    "refiner_enabled": False,
+    "refiner_checkpoint": "",
+    "refiner_switch_mode": "steps",
+    "refiner_switch_at": 0.8,
+    "refiner_cfg_scale": 0.0,
 }
 
 MAX_EDITOR_POLYGON_POINTS = 1024
@@ -74,6 +80,7 @@ def initial_editor_plan() -> RegionalGenerationPlan:
         canvas=Canvas(width=1024, height=1024),
         global_prompt=GlobalPrompt(),
         engine=EngineSelection(options=DEFAULT_GENERATION_OPTIONS),
+        passes=PassPolicy(refiner="global_refine"),
     )
 
 
@@ -244,6 +251,13 @@ def update_engine_request(plan: RegionalGenerationPlan, requested: str) -> Regio
     if not requested:
         raise PlanError("editor.engine.invalid", "$.engine.requested", "Engine selection cannot be empty")
     return replace(plan, engine=replace(plan.engine, requested=requested))
+
+
+def update_refiner_policy(
+    plan: RegionalGenerationPlan,
+    policy: str,
+) -> RegionalGenerationPlan:
+    return replace(plan, passes=replace(plan.passes, refiner=str(policy)))
 
 
 def update_region(plan: RegionalGenerationPlan, region_id: UUID, **changes: Any) -> RegionalGenerationPlan:

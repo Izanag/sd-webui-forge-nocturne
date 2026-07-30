@@ -9,7 +9,7 @@ from uuid import UUID
 
 import gradio as gr
 
-from modules import scripts, sd_samplers, sd_schedulers, shared, ui_toprow
+from modules import scripts, sd_models, sd_samplers, sd_schedulers, shared, ui_toprow
 from modules_nocturne.regional.editor import (
     add_region,
     apply_geometry_edit,
@@ -34,10 +34,12 @@ from modules_nocturne.regional.editor import (
     update_raster_geometry,
     update_rectangle_geometry,
     update_region,
+    update_refiner_policy,
     validation_markdown,
 )
 from modules_nocturne.regional.capabilities import capability_service
 from modules_nocturne.regional.errors import PlanError, PlanValidationError
+from modules_nocturne.regional.generation import required_plan_fallbacks
 from modules_nocturne.regional.model import PolygonGeometry, RasterMaskGeometry, RectGeometry, SeedMode
 from modules_nocturne.regional.serialization import canonical_json, plan_hash
 from modules_nocturne.regional.project import load_project, restore_metadata_file, save_project
@@ -154,6 +156,12 @@ def _snapshot(plan, selected_id, *, status=None, raw_value=None):
         gr.update(value=options.get("hires_height", 0)),
         gr.update(value=options.get("hires_distilled_cfg_scale", 3.0)),
         gr.update(value=options.get("hires_cfg_scale", options.get("cfg_scale", 6.0))),
+        gr.update(value=options.get("refiner_enabled", False)),
+        gr.update(value=options.get("refiner_checkpoint", "")),
+        gr.update(value=options.get("refiner_switch_mode", "steps")),
+        gr.update(value=options.get("refiner_switch_at", 0.8)),
+        gr.update(value=options.get("refiner_cfg_scale", 0.0)),
+        gr.update(value=plan.passes.refiner),
     )
     return (*common, *plan_controls, *_selected_updates(plan, selected, report), *_operation_updates(selected))
 
@@ -380,9 +388,12 @@ def _engine_component_update(current):
     return gr.update(choices=choices, value=current, interactive=interactive)
 
 
-def _engine_preflight_values(current):
+def _engine_preflight_values(current, plan=None):
     report = _loaded_capability_report()
-    if report is None or report.status != "supported":
+    plan_fallbacks = required_plan_fallbacks(plan) if plan is not None else ()
+    if report is None:
+        return "", plan_fallbacks
+    if report.status != "supported":
         return "", ()
     engines = (
         report.eligible_engines
@@ -397,6 +408,7 @@ def _engine_preflight_values(current):
             (
                 *report.expected_fallbacks,
                 *(fallback for engine in engines for fallback in engine.expected_fallbacks),
+                *plan_fallbacks,
             )
         )
     )
@@ -406,8 +418,9 @@ def _engine_preflight_values(current):
     return cost_text, required_fallbacks
 
 
-def _engine_preflight_controls(current):
-    cost_text, required_fallbacks = _engine_preflight_values(current)
+def _engine_preflight_controls(current, plan_json):
+    plan = load_valid_editor_plan(plan_json)
+    cost_text, required_fallbacks = _engine_preflight_values(current, plan)
     report = _loaded_capability_report()
     generation_available = report is None or report.status == "supported"
     return (
@@ -428,8 +441,9 @@ def _engine_preflight_controls(current):
     )
 
 
-def _accepted_fallback_controls(current, acknowledged):
-    _, required_fallbacks = _engine_preflight_values(current)
+def _accepted_fallback_controls(current, acknowledged, plan_json):
+    plan = load_valid_editor_plan(plan_json)
+    _, required_fallbacks = _engine_preflight_values(current, plan)
     report = _loaded_capability_report()
     accepted = bool(acknowledged)
     ready = (report is None or report.status == "supported") and (
@@ -545,13 +559,28 @@ def _regional_generate(
     )
 
 
+def _refiner_checkpoint_choices() -> list[str]:
+    return [
+        "",
+        *[
+            checkpoint.name
+            for checkpoint in sd_models.checkpoints_list.values()
+            if checkpoint.metadata.get("modelspec.architecture")
+            == "stable-diffusion-xl-v1-refiner"
+        ],
+    ]
+
+
 def create_regional_interface(create_output_panel: Callable, *, head: str | None = None) -> gr.Blocks:
     """Create the canonical-plan Regional authoring workspace."""
 
     initial_plan = initial_editor_plan()
     initial_json = canonical_json(initial_plan)
     initial_engine_choices, initial_engine_interactive, initial_capability_status = _capability_values()
-    initial_cost_warning, initial_required_fallbacks = _engine_preflight_values("auto")
+    initial_cost_warning, initial_required_fallbacks = _engine_preflight_values(
+        "auto",
+        initial_plan,
+    )
     initial_capability_report = _loaded_capability_report()
     initial_generation_available = (
         (initial_capability_report is None or initial_capability_report.status == "supported")
@@ -1035,6 +1064,51 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                                     step=0.5,
                                     label="Hires CFG scale",
                                 )
+                        with gr.Accordion("Refiner", open=False):
+                            refiner_enabled = gr.Checkbox(
+                                label="Enable refiner",
+                                value=False,
+                            )
+                            refiner_checkpoint = gr.Dropdown(
+                                choices=_refiner_checkpoint_choices(),
+                                value="",
+                                label="Refiner checkpoint",
+                            )
+                            with gr.Row():
+                                refiner_switch_mode = gr.Dropdown(
+                                    choices=[
+                                        ("Fraction of steps", "steps"),
+                                        ("Sigma threshold", "sigma"),
+                                    ],
+                                    value="steps",
+                                    label="Switch mode",
+                                )
+                                refiner_switch_at = gr.Slider(
+                                    0.025,
+                                    1.0,
+                                    value=0.8,
+                                    step=0.025,
+                                    label="Switch at",
+                                )
+                                refiner_cfg_scale = gr.Slider(
+                                    0.0,
+                                    24.0,
+                                    value=0.0,
+                                    step=0.5,
+                                    label="Refiner CFG scale",
+                                    info="Uses the base CFG below 1.",
+                                )
+                            refiner_policy = gr.Dropdown(
+                                choices=[
+                                    (
+                                        "Global refiner",
+                                        "global_refine",
+                                    ),
+                                    ("Disabled", "disabled"),
+                                ],
+                                value="global_refine",
+                                label="Regional behavior",
+                            )
                     plan_hash_display = gr.Markdown(f"`{plan_hash(initial_plan)}`", label="Plan hash")
 
                     with gr.Accordion("Advanced plan details", open=False):
@@ -1134,6 +1208,12 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             hires_height,
             hires_distilled_cfg_scale,
             hires_cfg_scale,
+            refiner_enabled,
+            refiner_checkpoint,
+            refiner_switch_mode,
+            refiner_switch_at,
+            refiner_cfg_scale,
+            refiner_policy,
             *selected_components,
             duplicate_button,
             delete_button,
@@ -1184,7 +1264,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             return (*live_state(snapshot), snapshot[6])
 
         def region_live_state(snapshot):
-            return (*canvas_live_state(snapshot), snapshot[7], snapshot[8], *snapshot[46:57])
+            return (*canvas_live_state(snapshot), snapshot[7], snapshot[8], *snapshot[52:63])
 
         def add_action(plan_json, selected_id, mode):
             return _mutate(
@@ -1225,7 +1305,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 selected_id,
                 lambda plan, selected: (update_global_prompts(plan, positive, negative), selected),
             )
-            return (*result[:9], *result[30:])
+            return (*result[:9], *result[36:])
 
         def canvas_action(plan_json, selected_id, width, height):
             snapshot = _mutate(
@@ -1254,29 +1334,43 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             hires_resize_height,
             hires_distilled_cfg,
             hires_cfg,
+            enable_refiner,
+            selected_refiner,
+            refiner_mode,
+            refiner_threshold,
+            refiner_cfg,
+            selected_refiner_policy,
         ):
             snapshot = _mutate(
                 plan_json,
                 selected_id,
                 lambda plan, selected: (
-                    update_generation_options(
-                        plan,
-                        sampler=sampler_name,
-                        scheduler=scheduler_name,
-                        steps=int(step_count),
-                        cfg_scale=float(cfg),
-                        batch_count=int(count),
-                        batch_size=int(size),
-                        seed=int(base_seed),
-                        hires_enabled=bool(enable_hires),
-                        hires_upscaler=str(hires_upscaler_name),
-                        hires_steps=int(hires_step_count),
-                        hires_denoising_strength=float(hires_denoising),
-                        hires_scale=float(hires_resize_scale),
-                        hires_width=int(hires_resize_width),
-                        hires_height=int(hires_resize_height),
-                        hires_distilled_cfg_scale=float(hires_distilled_cfg),
-                        hires_cfg_scale=float(hires_cfg),
+                    update_refiner_policy(
+                        update_generation_options(
+                            plan,
+                            sampler=sampler_name,
+                            scheduler=scheduler_name,
+                            steps=int(step_count),
+                            cfg_scale=float(cfg),
+                            batch_count=int(count),
+                            batch_size=int(size),
+                            seed=int(base_seed),
+                            hires_enabled=bool(enable_hires),
+                            hires_upscaler=str(hires_upscaler_name),
+                            hires_steps=int(hires_step_count),
+                            hires_denoising_strength=float(hires_denoising),
+                            hires_scale=float(hires_resize_scale),
+                            hires_width=int(hires_resize_width),
+                            hires_height=int(hires_resize_height),
+                            hires_distilled_cfg_scale=float(hires_distilled_cfg),
+                            hires_cfg_scale=float(hires_cfg),
+                            refiner_enabled=bool(enable_refiner),
+                            refiner_checkpoint=str(selected_refiner or ""),
+                            refiner_switch_mode=str(refiner_mode),
+                            refiner_switch_at=float(refiner_threshold),
+                            refiner_cfg_scale=float(refiner_cfg),
+                        ),
+                        selected_refiner_policy,
                     ),
                     selected,
                 ),
@@ -1538,6 +1632,12 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             hires_height,
             hires_distilled_cfg_scale,
             hires_cfg_scale,
+            refiner_enabled,
+            refiner_checkpoint,
+            refiner_switch_mode,
+            refiner_switch_at,
+            refiner_cfg_scale,
+            refiner_policy,
         ]
         for component in generation_inputs:
             component.input(
@@ -1546,6 +1646,16 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 outputs=live_state_outputs,
                 show_progress=False,
                 trigger_mode="always_last",
+            ).then(
+                _engine_preflight_controls,
+                inputs=[engine_choice, last_valid_plan],
+                outputs=[
+                    engine_cost_warning,
+                    fallback_acknowledgement,
+                    accepted_fallbacks,
+                    toprow.submit,
+                ],
+                show_progress=False,
             )
         engine_choice.input(
             engine_action,
@@ -1554,7 +1664,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             show_progress=False,
         ).then(
             _engine_preflight_controls,
-            inputs=[engine_choice],
+            inputs=[engine_choice, last_valid_plan],
             outputs=[
                 engine_cost_warning,
                 fallback_acknowledgement,
@@ -1567,7 +1677,11 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
 
         fallback_acknowledgement.input(
             _accepted_fallback_controls,
-            inputs=[engine_choice, fallback_acknowledgement],
+            inputs=[
+                engine_choice,
+                fallback_acknowledgement,
+                last_valid_plan,
+            ],
             outputs=[accepted_fallbacks, toprow.submit],
             show_progress=False,
         )

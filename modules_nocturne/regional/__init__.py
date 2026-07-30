@@ -61,7 +61,12 @@ from modules_nocturne.regional.masks import (
     compile_masks,
     mask_cache,
 )
-from modules_nocturne.regional.generation import AuthorizedRegionalPlan, authorize_generation
+from modules_nocturne.regional.generation import (
+    GLOBAL_REFINER_FALLBACK,
+    AuthorizedRegionalPlan,
+    authorize_generation,
+    required_plan_fallbacks,
+)
 from modules_nocturne.regional.forge_prompts import (
     ForgeExtraNetworkParse,
     ForgePromptSchedule,
@@ -128,6 +133,7 @@ __all__ = [
     "EngineRegistry",
     "EncodingRequest",
     "GlobalPrompt",
+    "GLOBAL_REFINER_FALLBACK",
     "GuidanceSchedule",
     "IssueSeverity",
     "InstalledRegionalEngine",
@@ -202,6 +208,7 @@ __all__ = [
     "parse_forge_extra_networks",
     "resolve_forge_schedules",
     "resolve_forge_seed_sequence",
+    "required_plan_fallbacks",
     "resolve_seed_batch",
     "resolve_seed_plan",
     "restore_metadata",
