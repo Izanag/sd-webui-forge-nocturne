@@ -33,6 +33,12 @@ from modules_nocturne.regional.anima_grid import (
     AnimaPatchMaskSet,
     compile_anima_patch_masks,
 )
+from modules_nocturne.regional.anima_attention_engine import (
+    AnimaAttentionEngine,
+    AnimaAttentionRuntimeInstaller,
+    InstalledAnimaAttention,
+    anima_attention_engine,
+)
 from modules_nocturne.regional.model import (
     CURRENT_SCHEMA,
     Canvas,
@@ -127,6 +133,8 @@ __all__ = [
     "AttentionDecompositionEngine",
     "AnimaPatchGrid",
     "AnimaPatchMaskSet",
+    "AnimaAttentionEngine",
+    "AnimaAttentionRuntimeInstaller",
     "AuthorizedRegionalPlan",
     "Canvas",
     "CapabilityReport",
@@ -144,6 +152,7 @@ __all__ = [
     "GuidanceSchedule",
     "IssueSeverity",
     "InstalledRegionalEngine",
+    "InstalledAnimaAttention",
     "InstalledAttentionDecomposition",
     "RegionalAttentionRuntimeInstaller",
     "ForgeExtraNetworkParse",
@@ -201,6 +210,7 @@ __all__ = [
     "build_metadata",
     "authorize_generation",
     "attention_decomposition_engine",
+    "anima_attention_engine",
     "build_regional_conditioning",
     "compile_prompt_plan",
     "compile_mask_pyramid",

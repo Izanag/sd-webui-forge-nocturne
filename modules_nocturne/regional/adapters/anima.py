@@ -76,7 +76,7 @@ class AnimaArchitectureFacts:
                     "shift": 3.0,
                 },
                 "capabilities": {
-                    "regional_generation": "engine-unavailable",
+                    "regional_generation": "anima-attention",
                     "cfg": "supported",
                     "negative_prompt": "supported-when-cfg-is-not-1",
                     "hires": "blocked-unverified",

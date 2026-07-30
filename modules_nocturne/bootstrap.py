@@ -22,6 +22,7 @@ def register_runtime_components() -> None:
         from modules_nocturne.regional.adapters.sd15 import sd15_adapter
         from modules_nocturne.regional.adapters.sdxl import sdxl_adapter
         from modules_nocturne.regional.adapters.anima import anima_adapter
+        from modules_nocturne.regional.anima_attention_engine import anima_attention_engine
         from modules_nocturne.regional.attention_engine import attention_decomposition_engine
         from modules_nocturne.regional.capabilities import capability_service
 
@@ -31,16 +32,15 @@ def register_runtime_components() -> None:
                 capability_service.adapters.register(adapter)
             elif registered is not adapter:
                 raise RuntimeError(f"Conflicting Regional adapter registration: {adapter.adapter_id}")
-        registered_engine = capability_service.engines.get(
-            attention_decomposition_engine.engine_id
-        )
-        if registered_engine is None:
-            capability_service.engines.register(attention_decomposition_engine)
-        elif registered_engine is not attention_decomposition_engine:
-            raise RuntimeError(
-                "Conflicting Regional engine registration: "
-                f"{attention_decomposition_engine.engine_id}"
-            )
+        for engine in (attention_decomposition_engine, anima_attention_engine):
+            registered_engine = capability_service.engines.get(engine.engine_id)
+            if registered_engine is None:
+                capability_service.engines.register(engine)
+            elif registered_engine is not engine:
+                raise RuntimeError(
+                    "Conflicting Regional engine registration: "
+                    f"{engine.engine_id}"
+                )
         _runtime_registered = True
         LOGGER.debug("Nocturne runtime components registered")
 

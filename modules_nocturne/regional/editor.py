@@ -37,6 +37,7 @@ DEFAULT_GENERATION_OPTIONS = {
     "scheduler": "Automatic",
     "steps": 32,
     "cfg_scale": 6.0,
+    "distilled_cfg_scale": 3.0,
     "batch_count": 1,
     "batch_size": 1,
     "seed": -1,

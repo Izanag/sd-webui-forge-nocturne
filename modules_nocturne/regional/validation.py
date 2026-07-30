@@ -162,6 +162,7 @@ def _validate_generation_options(plan: RegionalGenerationPlan, issues: list[Vali
 
     for name in (
         "cfg_scale",
+        "distilled_cfg_scale",
         "hires_cfg_scale",
         "hires_distilled_cfg_scale",
     ):

@@ -343,13 +343,32 @@ class Block(nn.Module):
 
         def _x_fn(_x_B_T_H_W_D: torch.Tensor, layer_norm_cross_attn: Callable, _scale_cross_attn_B_T_1_1_D: torch.Tensor, _shift_cross_attn_B_T_1_1_D: torch.Tensor, transformer_options: Optional[dict] = {}) -> torch.Tensor:
             _normalized_x_B_T_H_W_D = self._fn(_x_B_T_H_W_D, layer_norm_cross_attn, _scale_cross_attn_B_T_1_1_D, _shift_cross_attn_B_T_1_1_D)
-            _result_B_T_H_W_D = rearrange(
-                self.cross_attn(
-                    rearrange(_normalized_x_B_T_H_W_D.to(compute_dtype), "b t h w d -> b (t h w) d"),
+            _hidden_states = rearrange(
+                _normalized_x_B_T_H_W_D.to(compute_dtype),
+                "b t h w d -> b (t h w) d",
+            )
+            _regional_cross_attention = transformer_options.get(
+                "anima_cross_attention",
+            )
+            if _regional_cross_attention is None:
+                _cross_attention_output = self.cross_attn(
+                    _hidden_states,
                     crossattn_emb,
                     rope_emb=rope_emb_L_1_1_D,
                     transformer_options=transformer_options,
-                ),
+                )
+            elif callable(_regional_cross_attention):
+                _cross_attention_output = _regional_cross_attention(
+                    module=self.cross_attn,
+                    hidden_states=_hidden_states,
+                    context=crossattn_emb,
+                    rope_emb=rope_emb_L_1_1_D,
+                    transformer_options=transformer_options,
+                )
+            else:
+                raise TypeError("Anima cross-attention replacement must be callable")
+            _result_B_T_H_W_D = rearrange(
+                _cross_attention_output,
                 "b (t h w) d -> b t h w d",
                 t=T,
                 h=H,
@@ -498,12 +517,17 @@ class Anima(nn.Module):
         if x_B_T_H_W_D.dtype is torch.float16:
             x_B_T_H_W_D = x_B_T_H_W_D.float()
 
-        for block in self.blocks:
+        for block_index, block in enumerate(self.blocks):
+            block_options = dict(block_kwargs)
+            block_options["transformer_options"] = dict(
+                block_kwargs["transformer_options"],
+                anima_block_index=block_index,
+            )
             x_B_T_H_W_D = block(
                 x_B_T_H_W_D,
                 t_embedding_B_T_D,
                 crossattn_emb,
-                **block_kwargs,
+                **block_options,
             )
 
         x_B_T_H_W_O = self.final_layer(x_B_T_H_W_D.to(crossattn_emb.dtype), t_embedding_B_T_D, adaln_lora_B_T_3D=adaln_lora_B_T_3D)

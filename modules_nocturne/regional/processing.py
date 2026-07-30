@@ -34,6 +34,7 @@ _CANONICAL_PROCESSING_FIELDS = frozenset(
         "scheduler",
         "steps",
         "cfg_scale",
+        "distilled_cfg_scale",
         "batch_size",
         "n_iter",
         "seed",
@@ -96,6 +97,9 @@ def forge_fields_from_plan(
             "scheduler": options.get("scheduler", "Automatic"),
             "steps": int(options.get("steps", 32)),
             "cfg_scale": float(options.get("cfg_scale", 6.0)),
+            "distilled_cfg_scale": float(
+                options.get("distilled_cfg_scale", 3.0)
+            ),
             "batch_size": int(options.get("batch_size", 1)),
             "n_iter": int(options.get("batch_count", 1)),
             "seed": int(options.get("seed", -1)),
