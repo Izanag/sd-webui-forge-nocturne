@@ -22,6 +22,8 @@ from modules_nocturne.regional.runtime import RegionalBatchCompilation, Regional
 class AnimaAttentionEngine:
     engine_id = "anima-attention"
     engine_version = "0.1.0"
+    mask_mapping_version = "anima-patch-grid/v1"
+    routing_policy_version = "anima-regional-routing/v1"
 
     def capabilities(self) -> EngineCapabilities:
         return EngineCapabilities(

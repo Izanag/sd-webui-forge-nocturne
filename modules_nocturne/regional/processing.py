@@ -268,6 +268,8 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         if self.regional_runtime is not None:
             return
         authorized = self.authorized_plan
+        engine = None
+        adapter = None
         if authorized is None:
             report = capability_service.report(self.sd_model)
             accepted_fallbacks = self.accepted_fallbacks
@@ -310,6 +312,30 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
                 raise RuntimeError("The authorized Regional adapter is no longer registered")
             self.authorized_plan = authorized
             self.runtime_installer = installer_factory(adapter=adapter)
+        else:
+            engine = capability_service.engines.get(authorized.engine.engine_id)
+            adapter = capability_service.adapters.get(authorized.adapter_id)
+            if adapter is None and self.runtime_installer is not None:
+                adapter = getattr(self.runtime_installer, "adapter", None)
+
+        runtime_options = dict(self.regional_engine_runtime_options)
+        adapter_version = getattr(adapter, "adapter_version", None)
+        if adapter_version:
+            runtime_options["adapter_version"] = str(adapter_version)
+        for name in ("mask_mapping_version", "routing_policy_version"):
+            value = getattr(engine, name, None)
+            if value:
+                runtime_options[name] = str(value)
+        conditioning_policy_provider = getattr(adapter, "conditioning_policy", None)
+        if callable(conditioning_policy_provider):
+            policy = conditioning_policy_provider(float(self.cfg_scale))
+            policy_document = (
+                policy.as_dict()
+                if callable(getattr(policy, "as_dict", None))
+                else dict(policy)
+            )
+            runtime_options["conditioning_policy"] = policy_document
+        self.regional_engine_runtime_options = MappingProxyType(runtime_options)
 
         self.regional_runtime = RegionalRuntime(authorized)
         self.regional_metadata_bundle = build_metadata(
@@ -329,6 +355,27 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
                 ),
             }
         )
+        if adapter_version:
+            self.extra_generation_params["Nocturne Regional Adapter Version"] = (
+                str(adapter_version)
+            )
+        mask_mapping_version = runtime_options.get("mask_mapping_version")
+        if mask_mapping_version:
+            self.extra_generation_params[
+                "Nocturne Regional Mask Mapping Version"
+            ] = str(mask_mapping_version)
+        conditioning_policy = runtime_options.get("conditioning_policy")
+        if conditioning_policy:
+            self.extra_generation_params[
+                "Nocturne Regional Conditioning Policy Version"
+            ] = str(conditioning_policy["policy_version"])
+            self.extra_generation_params[
+                "Nocturne Regional Negative Prompt"
+            ] = (
+                "active"
+                if conditioning_policy["negative_active"]
+                else conditioning_policy["negative_ignored_reason"]
+            )
         if authorized.engine.cost_warning:
             self.extra_generation_params["Nocturne Regional Warnings"] = (
                 authorized.engine.cost_warning

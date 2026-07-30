@@ -555,7 +555,6 @@ class StrictAnimaAdapter:
     def unsupported_fields(self) -> frozenset[str]:
         return frozenset(
             {
-                "conditioning.prompt_schedules",
                 "controlnet",
                 "edit",
                 "passes.hires",
@@ -617,7 +616,7 @@ class StrictAnimaAdapter:
                 else "Forge omits the unconditional/negative branch when CFG is 1"
             ),
             polarity_agnostic_encoding=CONDITIONING_SPEC.polarity_agnostic_encoding,
-            prompt_schedules="forge-resolved; regional-engine-pending",
+            prompt_schedules="forge-resolved; regional-engine-routed-by-sigma",
         )
 
     def sampler_hooks(self) -> frozenset[str]:

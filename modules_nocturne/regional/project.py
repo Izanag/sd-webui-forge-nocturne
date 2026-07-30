@@ -55,12 +55,18 @@ class RestoredRegionalMetadata:
     engine_version: str | None = None
     engine_runtime_options: Mapping[str, Any] = field(default_factory=dict)
     resolved_seeds: tuple[ResolvedSeedPlan, ...] = ()
+    resolved_prompts: tuple[Mapping[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "engine_runtime_options",
             MappingProxyType(dict(self.engine_runtime_options)),
+        )
+        object.__setattr__(
+            self,
+            "resolved_prompts",
+            tuple(MappingProxyType(dict(item)) for item in self.resolved_prompts),
         )
 
 
@@ -124,6 +130,7 @@ def _metadata_document(
     adapter_id: str | None,
     accepted_fallbacks: tuple[str, ...],
     resolved_seeds: tuple[ResolvedSeedPlan, ...],
+    resolved_prompts: tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
     return {
         "metadata_schema": "nocturne.regional.metadata/v1",
@@ -144,6 +151,7 @@ def _metadata_document(
             }
             for item in resolved_seeds
         ],
+        "resolved_prompts": [dict(item) for item in resolved_prompts],
         "plan": plan_to_dict(plan),
     }
 
@@ -225,11 +233,38 @@ def build_metadata(
     adapter_id: str | None = None,
     accepted_fallbacks: tuple[str, ...] = (),
     resolved_seeds: ResolvedSeedBatch | tuple[ResolvedSeedPlan, ...] = (),
+    resolved_prompts: tuple[Any, ...] = (),
     embedded_limit_bytes: int = 256 * 1024,
 ) -> MetadataBundle:
     seed_records = resolved_seeds.images if isinstance(resolved_seeds, ResolvedSeedBatch) else tuple(resolved_seeds)
     if len(seed_records) > 10_000 or not all(isinstance(item, ResolvedSeedPlan) for item in seed_records):
         raise PlanError("metadata.resolved_seeds.invalid", "$.resolved_seeds", "Resolved seeds must contain at most 10000 seed records")
+    if len(resolved_prompts) > 10_000:
+        raise PlanError(
+            "metadata.resolved_prompts.invalid",
+            "$.resolved_prompts",
+            "Resolved prompts must contain at most 10000 records",
+        )
+    prompt_records = tuple(
+        {
+            "image_index": int(record.image_index),
+            "owner": str(record.owner.kind),
+            "region_id": (
+                str(record.owner.region_id)
+                if record.owner.region_id is not None
+                else None
+            ),
+            "polarity": str(record.polarity),
+            "entries": [
+                {
+                    "end_at_step": int(entry.end_at_step),
+                    "text": str(entry.text),
+                }
+                for entry in record.entries
+            ],
+        }
+        for record in resolved_prompts
+    )
     document = _metadata_document(
         plan,
         selected_engine=selected_engine,
@@ -238,6 +273,7 @@ def build_metadata(
         adapter_id=adapter_id,
         accepted_fallbacks=accepted_fallbacks,
         resolved_seeds=seed_records,
+        resolved_prompts=prompt_records,
     )
     encoded = base64.b64encode(zlib.compress(_metadata_json(document), level=9)).decode("ascii")
     sidecar_required = len(encoded) > embedded_limit_bytes
@@ -410,6 +446,89 @@ def restore_metadata(
             )
         restored_seed_records.append(ResolvedSeedPlan(region_seeds=region_seeds, **integers))
 
+    raw_prompt_records = document.get("resolved_prompts", [])
+    if not isinstance(raw_prompt_records, list) or len(raw_prompt_records) > 10_000:
+        raise PlanError(
+            "metadata.resolved_prompts.invalid",
+            "$.resolved_prompts",
+            "Resolved prompt records must be a bounded array",
+        )
+    restored_prompt_records = []
+    for index, raw_record in enumerate(raw_prompt_records):
+        path = f"$.resolved_prompts[{index}]"
+        if not isinstance(raw_record, dict):
+            raise PlanError(
+                "metadata.resolved_prompt.invalid",
+                path,
+                "Resolved prompt record must be an object",
+            )
+        image_index = raw_record.get("image_index")
+        owner = raw_record.get("owner")
+        region_id = raw_record.get("region_id")
+        polarity = raw_record.get("polarity")
+        entries = raw_record.get("entries")
+        if (
+            isinstance(image_index, bool)
+            or not isinstance(image_index, int)
+            or image_index < 0
+            or owner not in {"global", "region"}
+            or polarity not in {"positive", "negative"}
+            or (region_id is not None and not isinstance(region_id, str))
+            or not isinstance(entries, list)
+            or len(entries) > 10_000
+        ):
+            raise PlanError(
+                "metadata.resolved_prompt.invalid",
+                path,
+                "Resolved prompt record has invalid owner, polarity, image index or entries",
+            )
+        if owner == "region":
+            try:
+                parsed_region_id = UUID(region_id)
+            except (TypeError, ValueError) as error:
+                raise PlanError(
+                    "metadata.resolved_prompt.region_id_invalid",
+                    f"{path}.region_id",
+                    "Region prompt owner must identify a valid region UUID",
+                ) from error
+            if parsed_region_id not in expected_region_ids:
+                raise PlanError(
+                    "metadata.resolved_prompt.region_id_unknown",
+                    f"{path}.region_id",
+                    "Resolved prompt refers to a region outside the canonical plan",
+                )
+        elif region_id is not None:
+            raise PlanError(
+                "metadata.resolved_prompt.region_id_invalid",
+                f"{path}.region_id",
+                "Global prompt owner cannot identify a region",
+            )
+        restored_entries = []
+        for entry_index, entry in enumerate(entries):
+            entry_path = f"{path}.entries[{entry_index}]"
+            if (
+                not isinstance(entry, dict)
+                or isinstance(entry.get("end_at_step"), bool)
+                or not isinstance(entry.get("end_at_step"), int)
+                or entry["end_at_step"] < 1
+                or not isinstance(entry.get("text"), str)
+            ):
+                raise PlanError(
+                    "metadata.resolved_prompt.entry_invalid",
+                    entry_path,
+                    "Resolved prompt entry must contain a positive end step and text",
+                )
+            restored_entries.append(dict(entry))
+        restored_prompt_records.append(
+            {
+                "image_index": image_index,
+                "owner": owner,
+                "region_id": region_id,
+                "polarity": polarity,
+                "entries": restored_entries,
+            }
+        )
+
     return RestoredRegionalMetadata(
         plan=plan,
         requested_engine=requested_engine,
@@ -419,6 +538,7 @@ def restore_metadata(
         engine_version=engine_version,
         engine_runtime_options=engine_runtime_options,
         resolved_seeds=tuple(restored_seed_records),
+        resolved_prompts=tuple(restored_prompt_records),
     )
 
 

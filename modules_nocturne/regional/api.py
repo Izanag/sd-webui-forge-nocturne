@@ -292,6 +292,7 @@ class RegionalApi:
                             adapter_id=authorized.adapter_id,
                             accepted_fallbacks=authorized.accepted_fallbacks,
                             resolved_seeds=tuple(regional.regional_resolved_seeds),
+                            resolved_prompts=tuple(regional.regional_final_prompts),
                         )
                         output_images = processed.images + processed.extra_images
                         for image in output_images:

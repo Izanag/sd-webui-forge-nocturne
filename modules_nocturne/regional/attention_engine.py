@@ -33,6 +33,7 @@ _RELIABLE_SCHEDULE_SAMPLERS = frozenset(
     {
         "DPM++ 2M",
         "DPM++ SDE",
+        "ER SDE",
         "Euler",
         "Euler a",
     }

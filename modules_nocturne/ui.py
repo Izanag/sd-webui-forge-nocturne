@@ -513,6 +513,7 @@ def _regional_generate_function(
             adapter_id=authorized.adapter_id,
             accepted_fallbacks=authorized.accepted_fallbacks,
             resolved_seeds=tuple(regional.regional_resolved_seeds),
+            resolved_prompts=tuple(regional.regional_final_prompts),
         )
         for image in processed.images + processed.extra_images:
             image.info.update(metadata.fields)
