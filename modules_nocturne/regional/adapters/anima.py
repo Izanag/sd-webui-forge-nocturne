@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import re
-from typing import Any, Mapping
+from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING, Any, Mapping
+
+if TYPE_CHECKING:
+    from modules_nocturne.regional.anima_grid import AnimaPatchGrid
 
 
 ENGINE_TYPE = "backend.diffusion_engine.anima.Anima"
@@ -50,7 +53,17 @@ class AnimaArchitectureFacts:
         result.update(
             {
                 "adapter_version": "1.0.0",
-                "conditioning": "qwen3-0.6b-plus-t5-token-ids",
+                "conditioning": {
+                    "policy_version": "1.0.0",
+                    "source_encoder": "qwen3-0.6b",
+                    "adapter": "anima-llm-adapter",
+                    "context_dim": self.cross_attention_dim,
+                    "minimum_tokens": 512,
+                    "qwen_pad_id": 151643,
+                    "t5_end_id": 1,
+                    "polarity_agnostic_encoding": True,
+                    "cache_scope": "single-conditioning-build",
+                },
                 "prediction": "discrete-flow",
                 "vae": "wan-vae",
                 "supported_inference_dtypes": ["bfloat16", "float16", "float32"],
@@ -64,8 +77,8 @@ class AnimaArchitectureFacts:
                 },
                 "capabilities": {
                     "regional_generation": "engine-unavailable",
-                    "cfg": "unverified",
-                    "negative_prompt": "unverified",
+                    "cfg": "supported",
+                    "negative_prompt": "supported-when-cfg-is-not-1",
                     "hires": "blocked-unverified",
                     "edit": "blocked-unverified",
                     "controlnet": "blocked-unverified",
@@ -83,6 +96,33 @@ class AnimaArchitectureFacts:
 
 
 @dataclass(frozen=True, slots=True)
+class AnimaConditioningSpec:
+    policy_version: str = "1.0.0"
+    source_encoder: str = "qwen3-0.6b"
+    adapter: str = "anima-llm-adapter"
+    context_dim: int = 1024
+    minimum_tokens: int = 512
+    qwen_pad_id: int = 151643
+    t5_end_id: int = 1
+    polarity_agnostic_encoding: bool = True
+    cache_scope: str = "single-conditioning-build"
+
+
+@dataclass(frozen=True, slots=True)
+class AnimaConditioningPolicy:
+    policy_version: str
+    cfg_scale: float
+    positive_active: bool
+    negative_active: bool
+    negative_ignored_reason: str | None
+    polarity_agnostic_encoding: bool
+    prompt_schedules: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class AnimaAdapterMatch:
     matched: bool
     reason_code: str | None
@@ -91,6 +131,7 @@ class AnimaAdapterMatch:
 
 
 EXPECTED_FACTS = AnimaArchitectureFacts()
+CONDITIONING_SPEC = AnimaConditioningSpec()
 
 
 class _TopologyMismatch(Exception):
@@ -524,6 +565,68 @@ class StrictAnimaAdapter:
 
     def expected_fallbacks(self) -> tuple[str, ...]:
         return ()
+
+    def validate_conditioning_value(self, value: Any) -> None:
+        try:
+            import torch
+
+            valid = (
+                torch.is_tensor(value)
+                and value.ndim == 3
+                and value.shape[0] == 1
+                and value.shape[1] >= CONDITIONING_SPEC.minimum_tokens
+                and value.shape[2] == CONDITIONING_SPEC.context_dim
+                and torch.is_floating_point(value)
+                and bool(torch.isfinite(value).all().item())
+            )
+        except (AttributeError, RuntimeError, TypeError):
+            valid = False
+        if not valid:
+            raise RuntimeError(
+                "Anima Regional conditioning must be a finite floating-point "
+                "1xNx1024 tensor with at least 512 tokens"
+            )
+
+    def cross_attention_context(self, value: Any) -> Any:
+        self.validate_conditioning_value(value)
+        return value
+
+    def supported_conditioning_branches(self) -> frozenset[str]:
+        return frozenset({"positive", "negative"})
+
+    def conditioning_policy(self, cfg_scale: float) -> AnimaConditioningPolicy:
+        import math
+
+        if (
+            isinstance(cfg_scale, bool)
+            or not isinstance(cfg_scale, (int, float))
+            or not math.isfinite(float(cfg_scale))
+            or float(cfg_scale) < 1.0
+        ):
+            raise ValueError("Anima CFG scale must be a finite number greater than or equal to 1")
+        resolved_cfg = float(cfg_scale)
+        negative_active = not math.isclose(resolved_cfg, 1.0)
+        return AnimaConditioningPolicy(
+            policy_version=CONDITIONING_SPEC.policy_version,
+            cfg_scale=resolved_cfg,
+            positive_active=True,
+            negative_active=negative_active,
+            negative_ignored_reason=(
+                None
+                if negative_active
+                else "Forge omits the unconditional/negative branch when CFG is 1"
+            ),
+            polarity_agnostic_encoding=CONDITIONING_SPEC.polarity_agnostic_encoding,
+            prompt_schedules="forge-resolved; regional-engine-pending",
+        )
+
+    def sampler_hooks(self) -> frozenset[str]:
+        return frozenset({"transformer_options.cond_mark", "transformer_options.sigmas"})
+
+    def patch_grid(self, *, width: int, height: int) -> "AnimaPatchGrid":
+        from modules_nocturne.regional.anima_grid import AnimaPatchGrid
+
+        return AnimaPatchGrid.from_canvas(width, height)
 
 
 anima_adapter = StrictAnimaAdapter()

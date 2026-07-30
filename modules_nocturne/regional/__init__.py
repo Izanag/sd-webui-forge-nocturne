@@ -28,6 +28,11 @@ from modules_nocturne.regional.attention_engine import (
     SD15AttentionRuntimeInstaller,
     attention_decomposition_engine,
 )
+from modules_nocturne.regional.anima_grid import (
+    AnimaPatchGrid,
+    AnimaPatchMaskSet,
+    compile_anima_patch_masks,
+)
 from modules_nocturne.regional.model import (
     CURRENT_SCHEMA,
     Canvas,
@@ -120,6 +125,8 @@ __all__ = [
     "CURRENT_SCHEMA",
     "AdapterRegistry",
     "AttentionDecompositionEngine",
+    "AnimaPatchGrid",
+    "AnimaPatchMaskSet",
     "AuthorizedRegionalPlan",
     "Canvas",
     "CapabilityReport",
@@ -198,6 +205,7 @@ __all__ = [
     "compile_prompt_plan",
     "compile_mask_pyramid",
     "compile_masks",
+    "compile_anima_patch_masks",
     "derive_region_seed",
     "load_plan",
     "load_project",
