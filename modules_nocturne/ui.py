@@ -831,6 +831,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                             value=1024,
                             step=int(shared.opts.res_step),
                             label="Canvas width",
+                            elem_id="regional_width",
                         )
                         canvas_height = gr.Slider(
                             64,
@@ -838,6 +839,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                             value=1024,
                             step=int(shared.opts.res_step),
                             label="Canvas height",
+                            elem_id="regional_height",
                         )
 
                     with gr.Accordion("Selected region", open=True):
@@ -999,6 +1001,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                             hires_enabled = gr.Checkbox(
                                 label="Enable high-resolution pass",
                                 value=False,
+                                elem_id="regional_hr-checkbox",
                             )
                             with gr.Row():
                                 hires_upscaler = gr.Dropdown(

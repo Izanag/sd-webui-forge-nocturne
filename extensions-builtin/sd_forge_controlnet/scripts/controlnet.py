@@ -50,6 +50,11 @@ class ControlNetCachedParameters:
 
 class ControlNetForForgeOfficial(scripts.Script):
     sorting_priority = 10
+    supported_generation_contexts = (
+        scripts.GenerationContext.TXT2IMG,
+        scripts.GenerationContext.IMG2IMG,
+        scripts.GenerationContext.REGIONAL,
+    )
 
     def title(self):
         return "ControlNet"
@@ -62,7 +67,8 @@ class ControlNetForForgeOfficial(scripts.Script):
         ui_groups = []
         controls = []
         max_models = shared.opts.data.get("control_net_unit_count", 3)
-        elem_id_tabname = f"{'img2img' if is_img2img else 'txt2img'}_controlnet"
+        generation_context = self.generation_context.value
+        elem_id_tabname = f"{generation_context}_controlnet"
         default_unit = ControlNetUnit(enabled=False, module="None", model="None")
 
         with gr.Group(elem_id=elem_id_tabname):
@@ -70,7 +76,11 @@ class ControlNetForForgeOfficial(scripts.Script):
                 with gr.Tabs(elem_id=elem_id_tabname + "_tabs", elem_classes="controlnet_tabs"):
                     for i in range(max_models):
                         with gr.Tab(label=f"ControlNet Unit {i + 1}", id=i):
-                            group = ControlNetUiGroup(is_img2img, default_unit)
+                            group = ControlNetUiGroup(
+                                is_img2img,
+                                default_unit,
+                                generation_context=generation_context,
+                            )
                             ui_groups.append(group)
                             controls.append(group.render(f"ControlNet-{i}", elem_id_tabname))
 

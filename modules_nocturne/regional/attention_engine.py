@@ -404,8 +404,15 @@ class InstalledAttentionDecomposition:
         if self._closed:
             return
         try:
-            if getattr(self.model_context.forge_objects, "unet", None) is self.cloned_unet:
-                self.model_context.forge_objects.unet = self.previous_unet
+            current_unet = getattr(self.model_context.forge_objects, "unet", None)
+            patcher = current_unet
+            descendants_seen: set[int] = set()
+            while patcher is not None and id(patcher) not in descendants_seen:
+                if patcher is self.cloned_unet:
+                    self.model_context.forge_objects.unet = self.previous_unet
+                    break
+                descendants_seen.add(id(patcher))
+                patcher = getattr(patcher, "parent", None)
         finally:
             self.conditioning = None
             self._mask_tensors.clear()

@@ -26,12 +26,15 @@ class A1111Context:
     img2img_batch_output_dir = None
     txt2img_submit_button = None
     img2img_submit_button = None
+    regional_submit_button = None
 
     # Slider controls from A1111 WebUI.
     txt2img_w_slider = None
     txt2img_h_slider = None
     img2img_w_slider = None
     img2img_h_slider = None
+    regional_w_slider = None
+    regional_h_slider = None
 
     img2img_img2img_tab = None
     img2img_img2img_sketch_tab = None
@@ -42,6 +45,7 @@ class A1111Context:
 
     img2img_inpaint_area = None
     txt2img_enable_hr = None
+    regional_enable_hr = None
 
     @property
     def img2img_inpaint_tabs(self):
@@ -78,10 +82,13 @@ class A1111Context:
             "img2img_batch_output_dir": "img2img_batch_output_dir",
             "txt2img_generate": "txt2img_submit_button",
             "img2img_generate": "img2img_submit_button",
+            "regional_generate": "regional_submit_button",
             "txt2img_width": "txt2img_w_slider",
             "txt2img_height": "txt2img_h_slider",
             "img2img_width": "img2img_w_slider",
             "img2img_height": "img2img_h_slider",
+            "regional_width": "regional_w_slider",
+            "regional_height": "regional_h_slider",
             "img2img_img2img_tab": "img2img_img2img_tab",
             "img2img_img2img_sketch_tab": "img2img_img2img_sketch_tab",
             "img2img_batch_tab": "img2img_batch_tab",
@@ -90,6 +97,7 @@ class A1111Context:
             "img2img_inpaint_upload_tab": "img2img_inpaint_upload_tab",
             "img2img_inpaint_full_res": "img2img_inpaint_area",
             "txt2img_hr-checkbox": "txt2img_enable_hr",
+            "regional_hr-checkbox": "regional_enable_hr",
         }
         elem_id = getattr(component, "elem_id", None)
         # Do not set component if it has already been set.
@@ -132,6 +140,8 @@ class ControlNetUiGroup:
 
     @property
     def width_slider(self):
+        if self.is_regional:
+            return ControlNetUiGroup.a1111_context.regional_w_slider
         if self.is_img2img:
             return ControlNetUiGroup.a1111_context.img2img_w_slider
         else:
@@ -139,6 +149,8 @@ class ControlNetUiGroup:
 
     @property
     def height_slider(self):
+        if self.is_regional:
+            return ControlNetUiGroup.a1111_context.regional_h_slider
         if self.is_img2img:
             return ControlNetUiGroup.a1111_context.img2img_h_slider
         else:
@@ -148,6 +160,8 @@ class ControlNetUiGroup:
         self,
         is_img2img: bool,
         default_unit: external_code.ControlNetUnit,
+        *,
+        generation_context: str | None = None,
     ):
         # Whether callbacks have been registered.
         self.callbacks_registered: bool = False
@@ -155,6 +169,10 @@ class ControlNetUiGroup:
         self.ui_initialized: bool = False
 
         self.is_img2img = is_img2img
+        self.generation_context = generation_context or (
+            "img2img" if is_img2img else "txt2img"
+        )
+        self.is_regional = self.generation_context == "regional"
         self.default_unit = default_unit
         self.webcam_enabled = False
         self.webcam_mirrored = False
@@ -511,7 +529,16 @@ class ControlNetUiGroup:
             for event_subscriber in event_subscribers:
                 event_subscriber(fn=UiControlNetUnit, inputs=list(unit_args), outputs=unit)
 
-        (ControlNetUiGroup.a1111_context.img2img_submit_button if self.is_img2img else ControlNetUiGroup.a1111_context.txt2img_submit_button).click(
+        submit_button = (
+            ControlNetUiGroup.a1111_context.regional_submit_button
+            if self.is_regional
+            else (
+                ControlNetUiGroup.a1111_context.img2img_submit_button
+                if self.is_img2img
+                else ControlNetUiGroup.a1111_context.txt2img_submit_button
+            )
+        )
+        submit_button.click(
             fn=UiControlNetUnit,
             inputs=list(unit_args) + [self.type_filter],
             outputs=unit,
@@ -798,9 +825,14 @@ class ControlNetUiGroup:
         return
 
     def register_shift_hr_options(self):
-        ControlNetUiGroup.a1111_context.txt2img_enable_hr.change(
+        enable_hr = (
+            ControlNetUiGroup.a1111_context.regional_enable_hr
+            if self.is_regional
+            else ControlNetUiGroup.a1111_context.txt2img_enable_hr
+        )
+        enable_hr.change(
             fn=lambda checked: gr.update(visible=checked),
-            inputs=[ControlNetUiGroup.a1111_context.txt2img_enable_hr],
+            inputs=[enable_hr],
             outputs=[self.hr_option],
             show_progress=False,
         )
@@ -930,7 +962,7 @@ class ControlNetUiGroup:
     @staticmethod
     def try_register_all_callbacks():
         unit_count = shared.opts.data.get("control_net_unit_count", 3)
-        all_unit_count = unit_count * 2  # txt2img + img2img.
+        all_unit_count = unit_count * 3  # txt2img + img2img + Regional.
         if (
             # All A1111 components ControlNet units care about are all registered.
             ControlNetUiGroup.a1111_context.ui_initialized
