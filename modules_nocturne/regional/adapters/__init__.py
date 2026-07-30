@@ -14,6 +14,13 @@ from modules_nocturne.regional.adapters.sdxl import (
     StrictSDXLAdapter,
     sdxl_adapter,
 )
+from modules_nocturne.regional.adapters.anima import (
+    AnimaArchitectureFacts,
+    AnimaAdapterMatch,
+    StrictAnimaAdapter,
+    anima_adapter,
+    diagnose_anima_state_dict,
+)
 
 __all__ = [
     "AttentionBlockSpec",
@@ -26,4 +33,9 @@ __all__ = [
     "SDXLConditioningSpec",
     "StrictSDXLAdapter",
     "sdxl_adapter",
+    "AnimaArchitectureFacts",
+    "AnimaAdapterMatch",
+    "StrictAnimaAdapter",
+    "anima_adapter",
+    "diagnose_anima_state_dict",
 ]

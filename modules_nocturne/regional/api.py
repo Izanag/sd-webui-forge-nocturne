@@ -38,6 +38,7 @@ class RegionalCapabilityResponse(BaseModel):
 
     status: str
     adapter_id: str | None = None
+    architecture_facts: dict[str, Any] | None = None
     eligible_engines: list[RegionalEngineCapabilityResponse] = Field(default_factory=list)
     unsupported_fields: list[str] = Field(default_factory=list)
     expected_fallbacks: list[str] = Field(default_factory=list)
@@ -106,6 +107,11 @@ def _capability_response(report: CapabilityReport) -> RegionalCapabilityResponse
     return RegionalCapabilityResponse(
         status=report.status,
         adapter_id=report.adapter_id,
+        architecture_facts=(
+            dict(report.architecture_facts)
+            if report.architecture_facts is not None
+            else None
+        ),
         eligible_engines=[
             RegionalEngineCapabilityResponse(
                 engine_id=engine.engine_id,

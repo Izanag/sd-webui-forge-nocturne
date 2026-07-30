@@ -21,10 +21,11 @@ def register_runtime_components() -> None:
 
         from modules_nocturne.regional.adapters.sd15 import sd15_adapter
         from modules_nocturne.regional.adapters.sdxl import sdxl_adapter
+        from modules_nocturne.regional.adapters.anima import anima_adapter
         from modules_nocturne.regional.attention_engine import attention_decomposition_engine
         from modules_nocturne.regional.capabilities import capability_service
 
-        for adapter in (sd15_adapter, sdxl_adapter):
+        for adapter in (sd15_adapter, sdxl_adapter, anima_adapter):
             registered = capability_service.adapters.get(adapter.adapter_id)
             if registered is None:
                 capability_service.adapters.register(adapter)

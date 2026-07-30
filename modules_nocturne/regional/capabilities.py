@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from threading import RLock
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Mapping, Protocol, runtime_checkable
 
 from modules_nocturne.regional.model import OverlapPolicy, UncoveredPolicy
 
@@ -49,6 +49,7 @@ class RegionalModelAdapter(Protocol):
 class CapabilityReport:
     status: str
     adapter_id: str | None = None
+    architecture_facts: Mapping[str, Any] | None = None
     eligible_engines: tuple[EngineCapabilities, ...] = ()
     unsupported_fields: tuple[str, ...] = ()
     expected_fallbacks: tuple[str, ...] = ()
@@ -130,6 +131,10 @@ class CapabilityService:
                 reason="No registered Regional adapter supports the current model",
             )
 
+        facts_provider = getattr(adapter, "architecture_facts", None)
+        architecture_facts = (
+            facts_provider(model_context) if callable(facts_provider) else None
+        )
         eligible = []
         missing_engines = []
         for engine_id in sorted(adapter.supported_engine_ids()):
@@ -147,6 +152,7 @@ class CapabilityService:
             return CapabilityReport(
                 status="unsupported",
                 adapter_id=adapter.adapter_id,
+                architecture_facts=architecture_facts,
                 unsupported_fields=tuple(sorted(adapter.unsupported_fields())),
                 expected_fallbacks=tuple(fallbacks),
                 reason_code="engine.none_eligible",
@@ -156,6 +162,7 @@ class CapabilityService:
         return CapabilityReport(
             status="supported",
             adapter_id=adapter.adapter_id,
+            architecture_facts=architecture_facts,
             eligible_engines=tuple(eligible),
             unsupported_fields=tuple(sorted(adapter.unsupported_fields())),
             expected_fallbacks=tuple(fallbacks),
