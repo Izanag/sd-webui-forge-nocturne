@@ -469,6 +469,16 @@ def _regional_generate_function(
     from modules_nocturne.regional.processing import StableDiffusionProcessingRegional
     from modules_nocturne.regional.project import build_metadata, save_sidecar
 
+    unverified_scripts = scripts.scripts_regional.active_unverified_script_titles(
+        script_args
+    )
+    if unverified_scripts:
+        gr.Warning(
+            "Attempting unverified Regional scripts: "
+            + ", ".join(unverified_scripts)
+            + ". Disable the setting if generation becomes unstable."
+        )
+
     plan = load_valid_editor_plan(plan_json)
     with closing(
         StableDiffusionProcessingRegional.from_plan(

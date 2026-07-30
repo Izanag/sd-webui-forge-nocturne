@@ -90,6 +90,14 @@ def register_options(
                         gradio.Dropdown,
                         {"choices": ("Auto",)},
                     ).info("Additional choices appear only when their runtime support is available"),
+                    "nocturne_regional_attempt_unverified_scripts": option_info(
+                        False,
+                        "Attempt unverified txt2img scripts in Regional",
+                    )
+                    .info(
+                        "Explicitly incompatible scripts remain hidden; reload the UI after changing this setting"
+                    )
+                    .needs_reload_ui(),
                 },
             )
         )

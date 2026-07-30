@@ -83,6 +83,9 @@ class Script:
     supported_generation_contexts = (GenerationContext.TXT2IMG, GenerationContext.IMG2IMG)
     """Generation workspaces where this script is explicitly supported."""
 
+    regional_compatibility = None
+    """Regional compatibility level assigned by the Regional script runner."""
+
     group = None
     """A gr.Group component that has all script's UI inside it."""
 
@@ -356,8 +359,14 @@ class Script:
         """helper function to generate id for a HTML element, constructs final id out of script name, tab and user-supplied item_id"""
 
         need_tabname = self.show(True) == self.show(False)
-        tabkind = "img2img" if self.is_img2img else "txt2img"
+        tabkind = (
+            self.tabname
+            if self.is_regional
+            else ("img2img" if self.is_img2img else "txt2img")
+        )
         tabname = f"{tabkind}_" if need_tabname else ""
+        if self.is_regional and not tabname:
+            tabname = "regional_"
         title = re.sub(r"[^a-z_0-9]", "", re.sub(r"\s", "_", self.title().lower()))
 
         return f"script_{tabname}{title}_{item_id}"
@@ -376,7 +385,14 @@ class ScriptBuiltinUI(Script):
         """helper function to generate id for a HTML element, constructs final id out of tab and user-supplied item_id"""
 
         need_tabname = self.show(True) == self.show(False)
-        tabname = ("img2img" if self.is_img2img else "txt2img") + "_" if need_tabname else ""
+        tabkind = (
+            self.tabname
+            if self.is_regional
+            else ("img2img" if self.is_img2img else "txt2img")
+        )
+        tabname = f"{tabkind}_" if need_tabname else ""
+        if self.is_regional and not tabname:
+            tabname = "regional_"
 
         return f"{tabname}{item_id}"
 
@@ -579,6 +595,7 @@ class ScriptRunner:
         self.inputs = [None]
 
         self.callback_map = {}
+        self.generation_context = None
         self.callback_names = [
             "before_process",
             "process",
@@ -611,7 +628,11 @@ class ScriptRunner:
         else:
             context = GenerationContext(context)
 
+        self.generation_context = context
         legacy_is_img2img = context == GenerationContext.IMG2IMG
+        allow_unverified_regional = context == GenerationContext.REGIONAL and bool(
+            getattr(shared.opts, "nocturne_regional_attempt_unverified_scripts", False)
+        )
 
         self.scripts.clear()
         self.alwayson_scripts.clear()
@@ -626,13 +647,6 @@ class ScriptRunner:
                 errors.report(f"Error # failed to initialize Script {script_data.module}: ", exc_info=True)
                 continue
 
-            supported_contexts = {
-                item.value if isinstance(item, GenerationContext) else str(item).lower()
-                for item in getattr(script, "supported_generation_contexts", ())
-            }
-            if context.value not in supported_contexts:
-                continue
-
             script.filename = script_data.path
             script.generation_context = context
             script.is_txt2img = context == GenerationContext.TXT2IMG
@@ -641,7 +655,52 @@ class ScriptRunner:
             script.tabname = context.value
 
             show_context = getattr(script, "show_context", None)
-            visibility = show_context(context) if callable(show_context) else script.show(script.is_img2img)
+            declared_contexts = None
+            for script_class in script.__class__.__mro__:
+                if script_class is Script:
+                    break
+                class_attributes = script_class.__dict__
+                if "supported_contexts" in class_attributes:
+                    declared_contexts = class_attributes["supported_contexts"]
+                    break
+                if "supported_generation_contexts" in class_attributes:
+                    declared_contexts = class_attributes[
+                        "supported_generation_contexts"
+                    ]
+                    break
+
+            unverified_regional = False
+            if callable(show_context):
+                visibility = show_context(context)
+                if not visibility:
+                    continue
+            else:
+                context_declarations = (
+                    declared_contexts
+                    if declared_contexts is not None
+                    else getattr(script, "supported_generation_contexts", ())
+                )
+                if isinstance(context_declarations, (str, GenerationContext)):
+                    context_declarations = (context_declarations,)
+                supported_contexts = {
+                    item.value if isinstance(item, GenerationContext) else str(item).lower()
+                    for item in (context_declarations or ())
+                }
+                if context.value not in supported_contexts:
+                    if (
+                        context == GenerationContext.REGIONAL
+                        and declared_contexts is None
+                        and allow_unverified_regional
+                    ):
+                        unverified_regional = True
+                    else:
+                        continue
+                visibility = script.show(script.is_img2img)
+
+            if context == GenerationContext.REGIONAL:
+                script.regional_compatibility = (
+                    "unverified" if unverified_regional else "verified"
+                )
 
             if visibility == AlwaysVisible:
                 self.scripts.append(script)
@@ -655,6 +714,22 @@ class ScriptRunner:
         self.callback_map.clear()
 
         self.apply_on_before_component_callbacks()
+
+    def active_unverified_script_titles(self, script_args=()):
+        titles = [
+            wrap_call(script.title, script.filename, "title") or script.filename
+            for script in self.alwayson_scripts
+            if script.regional_compatibility == "unverified"
+        ]
+        script_index = script_args[0] if script_args else None
+        if isinstance(script_index, int) and 0 < script_index <= len(self.selectable_scripts):
+            selected = self.selectable_scripts[script_index - 1]
+            if selected.regional_compatibility == "unverified":
+                titles.append(
+                    wrap_call(selected.title, selected.filename, "title")
+                    or selected.filename
+                )
+        return tuple(dict.fromkeys(titles))
 
     def apply_on_before_component_callbacks(self):
         for script in self.scripts:
@@ -867,6 +942,8 @@ class ScriptRunner:
                 script.before_process(p, *script_args)
             except Exception:
                 errors.report(f"Error running before_process: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def process(self, p):
         for script in self.ordered_scripts("process"):
@@ -875,14 +952,23 @@ class ScriptRunner:
                 script.process(p, *script_args)
             except Exception:
                 errors.report(f"Error running process: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def process_before_every_sampling(self, p, **kwargs):
-        for script in self.ordered_scripts("process_before_every_sampling"):
+        script_list = (
+            self.ordered_scripts("process_before_every_sampling")
+            if self.generation_context == GenerationContext.REGIONAL
+            else self.alwayson_scripts
+        )
+        for script in script_list:
             try:
                 script_args = p.script_args[script.args_from : script.args_to]
                 script.process_before_every_sampling(p, *script_args, **kwargs)
             except Exception:
                 errors.report(f"Error running process_before_every_sampling: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def before_process_batch(self, p, **kwargs):
         for script in self.ordered_scripts("before_process_batch"):
@@ -891,6 +977,8 @@ class ScriptRunner:
                 script.before_process_batch(p, *script_args, **kwargs)
             except Exception:
                 errors.report(f"Error running before_process_batch: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def before_process_init_images(self, p, pp, **kwargs):
         for script in self.ordered_scripts("before_process_init_images"):
@@ -899,6 +987,8 @@ class ScriptRunner:
                 script.before_process_init_images(p, pp, *script_args, **kwargs)
             except Exception:
                 errors.report(f"Error running before_process_init_images: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def after_extra_networks_activate(self, p, **kwargs):
         for script in self.ordered_scripts("after_extra_networks_activate"):
@@ -907,6 +997,8 @@ class ScriptRunner:
                 script.after_extra_networks_activate(p, *script_args, **kwargs)
             except Exception:
                 errors.report(f"Error running after_extra_networks_activate: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def process_batch(self, p, **kwargs):
         for script in self.ordered_scripts("process_batch"):
@@ -915,22 +1007,24 @@ class ScriptRunner:
                 script.process_batch(p, *script_args, **kwargs)
             except Exception:
                 errors.report(f"Error running process_batch: {script.filename}", exc_info=True)
-
-    def process_before_every_sampling(self, p, **kwargs):
-        for script in self.alwayson_scripts:
-            try:
-                script_args = p.script_args[script.args_from : script.args_to]
-                script.process_before_every_sampling(p, *script_args, **kwargs)
-            except Exception:
-                errors.report(f"Error running process_before_every_sampling: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def postprocess(self, p, processed):
+        regional_error = None
         for script in self.ordered_scripts("postprocess"):
             try:
                 script_args = p.script_args[script.args_from : script.args_to]
                 script.postprocess(p, processed, *script_args)
-            except Exception:
+            except Exception as error:
                 errors.report(f"Error running postprocess: {script.filename}", exc_info=True)
+                if (
+                    self.generation_context == GenerationContext.REGIONAL
+                    and regional_error is None
+                ):
+                    regional_error = error
+        if regional_error is not None:
+            raise regional_error
 
     def postprocess_batch(self, p, images, **kwargs):
         for script in self.ordered_scripts("postprocess_batch"):
@@ -939,6 +1033,8 @@ class ScriptRunner:
                 script.postprocess_batch(p, *script_args, images=images, **kwargs)
             except Exception:
                 errors.report(f"Error running postprocess_batch: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def postprocess_batch_list(self, p, pp: PostprocessBatchListArgs, **kwargs):
         for script in self.ordered_scripts("postprocess_batch_list"):
@@ -947,6 +1043,8 @@ class ScriptRunner:
                 script.postprocess_batch_list(p, pp, *script_args, **kwargs)
             except Exception:
                 errors.report(f"Error running postprocess_batch_list: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def post_sample(self, p, ps: PostSampleArgs):
         for script in self.ordered_scripts("post_sample"):
@@ -955,6 +1053,8 @@ class ScriptRunner:
                 script.post_sample(p, ps, *script_args)
             except Exception:
                 errors.report(f"Error running post_sample: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def on_mask_blend(self, p, mba: MaskBlendArgs):
         for script in self.ordered_scripts("on_mask_blend"):
@@ -963,6 +1063,8 @@ class ScriptRunner:
                 script.on_mask_blend(p, mba, *script_args)
             except Exception:
                 errors.report(f"Error running post_sample: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def postprocess_image(self, p, pp: PostprocessImageArgs):
         for script in self.ordered_scripts("postprocess_image"):
@@ -971,6 +1073,8 @@ class ScriptRunner:
                 script.postprocess_image(p, pp, *script_args)
             except Exception:
                 errors.report(f"Error running postprocess_image: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def postprocess_maskoverlay(self, p, ppmo: PostProcessMaskOverlayArgs):
         for script in self.ordered_scripts("postprocess_maskoverlay"):
@@ -979,6 +1083,8 @@ class ScriptRunner:
                 script.postprocess_maskoverlay(p, ppmo, *script_args)
             except Exception:
                 errors.report(f"Error running postprocess_image: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def postprocess_image_after_composite(self, p, pp: PostprocessImageArgs):
         for script in self.ordered_scripts("postprocess_image_after_composite"):
@@ -987,6 +1093,8 @@ class ScriptRunner:
                 script.postprocess_image_after_composite(p, pp, *script_args)
             except Exception:
                 errors.report(f"Error running postprocess_image_after_composite: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def before_component(self, component, **kwargs):
         for callback, script in self.on_before_component_elem_id.get(kwargs.get("elem_id"), []):
@@ -1042,6 +1150,8 @@ class ScriptRunner:
                 script.before_hr(p, *script_args)
             except Exception:
                 errors.report(f"Error running before_hr: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def setup_scripts(self, p, *, is_ui=True):
         for script in self.ordered_scripts("setup"):
@@ -1053,6 +1163,8 @@ class ScriptRunner:
                 script.setup(p, *script_args)
             except Exception:
                 errors.report(f"Error running setup: {script.filename}", exc_info=True)
+                if self.generation_context == GenerationContext.REGIONAL:
+                    raise
 
     def set_named_arg(self, args, script_name, arg_elem_id, value, fuzzy=False):
         """Locate an arg of a specific script in script_args and set its value
