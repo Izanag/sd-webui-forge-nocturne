@@ -146,6 +146,10 @@ def _snapshot(plan, selected_id, *, status=None, raw_value=None):
         gr.update(value=options.get("batch_count", 1)),
         gr.update(value=options.get("batch_size", 1)),
         gr.update(value=options.get("seed", -1)),
+        gr.update(value=options.get("subseed", -1)),
+        gr.update(value=options.get("subseed_strength", 0.0)),
+        gr.update(value=options.get("seed_resize_from_width", 0)),
+        gr.update(value=options.get("seed_resize_from_height", 0)),
         _engine_component_update(plan.engine.requested),
         gr.update(value=options.get("hires_enabled", False)),
         gr.update(value=options.get("hires_upscaler", "Latent")),
@@ -968,6 +972,35 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                                 scale=3,
                             )
                             seed = gr.Number(value=-1, precision=0, label="Seed", scale=1)
+                        with gr.Accordion("Seed extras", open=False):
+                            with gr.Row():
+                                subseed = gr.Number(
+                                    value=-1,
+                                    precision=0,
+                                    label="Variation seed",
+                                )
+                                subseed_strength = gr.Slider(
+                                    0.0,
+                                    1.0,
+                                    value=0.0,
+                                    step=0.01,
+                                    label="Variation strength",
+                                )
+                            with gr.Row():
+                                seed_resize_from_width = gr.Number(
+                                    value=0,
+                                    precision=0,
+                                    minimum=0,
+                                    maximum=2048,
+                                    label="Resize seed from width",
+                                )
+                                seed_resize_from_height = gr.Number(
+                                    value=0,
+                                    precision=0,
+                                    minimum=0,
+                                    maximum=2048,
+                                    label="Resize seed from height",
+                                )
                         capability_status = gr.Markdown(
                             initial_capability_status,
                             elem_id="regional_capability_status",
@@ -1211,6 +1244,10 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             batch_count,
             batch_size,
             seed,
+            subseed,
+            subseed_strength,
+            seed_resize_from_width,
+            seed_resize_from_height,
             engine_choice,
             hires_enabled,
             hires_upscaler,
@@ -1277,7 +1314,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             return (*live_state(snapshot), snapshot[6])
 
         def region_live_state(snapshot):
-            return (*canvas_live_state(snapshot), snapshot[7], snapshot[8], *snapshot[52:63])
+            return (*canvas_live_state(snapshot), snapshot[7], snapshot[8], *snapshot[56:67])
 
         def add_action(plan_json, selected_id, mode):
             return _mutate(
@@ -1318,7 +1355,7 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                 selected_id,
                 lambda plan, selected: (update_global_prompts(plan, positive, negative), selected),
             )
-            return (*result[:9], *result[36:])
+            return (*result[:9], *result[40:])
 
         def canvas_action(plan_json, selected_id, width, height):
             snapshot = _mutate(
@@ -1338,6 +1375,10 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             count,
             size,
             base_seed,
+            variation_seed,
+            variation_strength,
+            resize_seed_width,
+            resize_seed_height,
             enable_hires,
             hires_upscaler_name,
             hires_step_count,
@@ -1368,6 +1409,10 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
                             batch_count=int(count),
                             batch_size=int(size),
                             seed=int(base_seed),
+                            subseed=int(variation_seed),
+                            subseed_strength=float(variation_strength),
+                            seed_resize_from_width=int(resize_seed_width),
+                            seed_resize_from_height=int(resize_seed_height),
                             hires_enabled=bool(enable_hires),
                             hires_upscaler=str(hires_upscaler_name),
                             hires_steps=int(hires_step_count),
@@ -1636,6 +1681,10 @@ def create_regional_interface(create_output_panel: Callable, *, head: str | None
             batch_count,
             batch_size,
             seed,
+            subseed,
+            subseed_strength,
+            seed_resize_from_width,
+            seed_resize_from_height,
             hires_enabled,
             hires_upscaler,
             hires_steps,

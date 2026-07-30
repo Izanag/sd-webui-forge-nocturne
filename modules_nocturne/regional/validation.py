@@ -143,6 +143,8 @@ def _validate_generation_options(plan: RegionalGenerationPlan, issues: list[Vali
         ("hires_steps", 0, MAX_GENERATION_STEPS),
         ("hires_width", 0, MAX_CANVAS_DIMENSION),
         ("hires_height", 0, MAX_CANVAS_DIMENSION),
+        ("seed_resize_from_width", 0, MAX_CANVAS_DIMENSION),
+        ("seed_resize_from_height", 0, MAX_CANVAS_DIMENSION),
     )
     for name, minimum, maximum in integer_ranges:
         value = options.get(name)
@@ -304,6 +306,34 @@ def _validate_generation_options(plan: RegionalGenerationPlan, issues: list[Vali
             "generation.seed.out_of_range",
             "$.engine.options.seed",
             f"Generation seed must be -1 or between 0 and {MAX_SEED}",
+        )
+
+    subseed = options.get("subseed")
+    if subseed is not None and (
+        isinstance(subseed, bool)
+        or not isinstance(subseed, int)
+        or subseed < -1
+        or subseed > MAX_SEED
+    ):
+        _issue(
+            issues,
+            "generation.subseed.out_of_range",
+            "$.engine.options.subseed",
+            f"Variation seed must be -1 or between 0 and {MAX_SEED}",
+        )
+
+    subseed_strength = options.get("subseed_strength")
+    if subseed_strength is not None and (
+        isinstance(subseed_strength, bool)
+        or not isinstance(subseed_strength, (int, float))
+        or not math.isfinite(float(subseed_strength))
+        or not 0.0 <= float(subseed_strength) <= 1.0
+    ):
+        _issue(
+            issues,
+            "generation.subseed_strength.out_of_range",
+            "$.engine.options.subseed_strength",
+            "Variation strength must be between 0 and 1",
         )
 
 

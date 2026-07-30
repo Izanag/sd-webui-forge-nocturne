@@ -28,8 +28,18 @@ class RegionalAttentionAdapter(Protocol):
     def cross_attention_context(self, value: Any) -> Any: ...
 
 
-def _normalised_denoising_progress(extra_options: dict[str, Any]) -> float:
-    """Map Forge's current sigma to the sampler's zero-to-one denoising span."""
+_RELIABLE_SCHEDULE_SAMPLERS = frozenset(
+    {
+        "DPM++ 2M",
+        "DPM++ SDE",
+        "Euler",
+        "Euler a",
+    }
+)
+
+
+def _denoising_position(extra_options: dict[str, Any]) -> tuple[int, float]:
+    """Map Forge's current sigma to a discrete step and zero-to-one span."""
 
     import torch
 
@@ -43,9 +53,33 @@ def _normalised_denoising_progress(extra_options: dict[str, Any]) -> float:
     current = current_sigmas.detach().flatten()
     if schedule.numel() < 2 or current.numel() < 1:
         raise RuntimeError("Forge sampler sigma metadata is incomplete")
-    closest = int(torch.argmin(torch.abs(schedule - current[0].to(schedule))).item())
+    denoising_schedule = schedule[:-1]
+    closest = int(
+        torch.argmin(torch.abs(denoising_schedule - current[0].to(schedule))).item()
+    )
     last_denoising_step = max(1, schedule.numel() - 2)
-    return min(1.0, max(0.0, closest / last_denoising_step))
+    progress = min(1.0, max(0.0, closest / last_denoising_step))
+    return closest, progress
+
+
+def _normalised_denoising_progress(extra_options: dict[str, Any]) -> float:
+    return _denoising_position(extra_options)[1]
+
+
+def _schedule_entry(prompt, step_index: int):
+    for entry in prompt.entries:
+        if step_index <= entry.end_at_step:
+            return entry
+    return prompt.entries[-1]
+
+
+def _require_reliable_schedule_sampler(sampler_name: str) -> None:
+    if sampler_name not in _RELIABLE_SCHEDULE_SAMPLERS:
+        raise PlanError(
+            "engine.guidance_sampler.unsupported",
+            "$.engine.options.sampler",
+            "Scheduled Regional prompts and guidance require a sampler with verified sigma progress",
+        )
 
 
 class AttentionDecompositionEngine:
@@ -121,20 +155,17 @@ class RegionalAttentionRuntimeInstaller:
             and (region.guidance.start != 0.0 or region.guidance.end != 1.0)
             for region in plan.regions
         )
-        if scheduled_guidance:
-            from modules import sd_samplers_kdiffusion
-
+        scheduled_prompts = bool(
+            batch.conditioning
+            and any(
+                len(prompt.entries) > 1
+                for image in batch.conditioning.images
+                for prompt in image.prompts.values()
+            )
+        )
+        if scheduled_guidance or scheduled_prompts:
             sampler_name = str(plan.engine.options.get("sampler", "Euler a"))
-            k_diffusion_samplers = {
-                sampler.name
-                for sampler in sd_samplers_kdiffusion.samplers_data_k_diffusion
-            }
-            if sampler_name not in k_diffusion_samplers:
-                raise PlanError(
-                    "engine.guidance_sampler.unsupported",
-                    "$.engine.options.sampler",
-                    "Scheduled Regional guidance currently requires a K-diffusion sampler",
-                )
+            _require_reliable_schedule_sampler(sampler_name)
         grids = self.adapter.attention_grids(
             model_context,
             width=batch.context.width,
@@ -229,6 +260,7 @@ class InstalledAttentionDecomposition:
         self.attention_function = attention_function
         self.attention_memory_budget_bytes = int(attention_memory_budget_bytes)
         self.conditioning: RegionalConditioningBatch | None = None
+        self._has_prompt_schedules = False
         self._mask_tensors: dict[tuple[Any, ...], tuple[Any, dict[Any, Any]]] = {}
         self._closed = False
 
@@ -253,12 +285,6 @@ class InstalledAttentionDecomposition:
             raise RuntimeError("Regional conditioning image order does not match the installed engine")
         for image in conditioning.images:
             for prompt in image.prompts.values():
-                if len(prompt.entries) != 1:
-                    raise PlanError(
-                        "engine.prompt_schedule.unsupported",
-                        "$",
-                        "Scheduled or alternating prompts are not yet enabled in the sampler engine",
-                    )
                 if len(prompt.entries[0].encoded) != 1:
                     raise PlanError(
                         "engine.prompt_composition.unsupported",
@@ -268,7 +294,20 @@ class InstalledAttentionDecomposition:
                 self.adapter.validate_conditioning_value(
                     prompt.entries[0].encoded[0].value
                 )
+                for entry in prompt.entries[1:]:
+                    if len(entry.encoded) != 1:
+                        raise PlanError(
+                            "engine.prompt_composition.unsupported",
+                            "$",
+                            "Weighted AND prompts are not yet enabled in the sampler engine",
+                        )
+                    self.adapter.validate_conditioning_value(entry.encoded[0].value)
         self.conditioning = conditioning
+        self._has_prompt_schedules = any(
+            len(prompt.entries) > 1
+            for image in conditioning.images
+            for prompt in image.prompts.values()
+        )
 
     def _attention(self):
         if self.attention_function is not None:
@@ -323,7 +362,10 @@ class InstalledAttentionDecomposition:
             start != 0.0 or end != 1.0
             for start, end in self.guidance_by_region.values()
         )
-        progress = _normalised_denoising_progress(extra_options) if scheduled else 0.0
+        if scheduled or self._has_prompt_schedules:
+            step_index, progress = _denoising_position(extra_options)
+        else:
+            step_index, progress = 0, 0.0
 
         for row in range(q.shape[0]):
             image = self.conditioning.images[row % image_count]
@@ -339,8 +381,9 @@ class InstalledAttentionDecomposition:
                     )
                     continue
                 prompt = image.get(PromptOwner(kind="region", region_id=region_id), polarity)
+                entry = _schedule_entry(prompt, step_index)
                 context = self.adapter.cross_attention_context(
-                    prompt.entries[0].encoded[0].value
+                    entry.encoded[0].value
                 )
                 if not torch.is_tensor(context) or context.ndim != 2:
                     raise RuntimeError(
