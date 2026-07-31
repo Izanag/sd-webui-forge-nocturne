@@ -4,7 +4,7 @@
 An AGPL-3.0 fork of Stable Diffusion WebUI Forge Neo with a native Regional generation workspace.
 </p>
 
-Nocturne includes a native Regional workspace with restorable plans, mask editing and attention-decomposition sampling for verified SD 1.5 and SDXL checkpoints.
+Nocturne includes a native Regional workspace with restorable plans, mask editing and architecture-specific Regional sampling for verified SD 1.5, SDXL and Anima checkpoints.
 
 ## Regional compatibility
 
@@ -14,13 +14,15 @@ Status meanings: **Production** is the normal supported path, **Advanced** is su
 | --- | --- | --- |
 | SD 1.5 | **Production** | Regional attention decomposition, global LoRA/extra networks, global ControlNet units, hires recompilation, low-VRAM and no-VRAM |
 | SDXL | **Production** | Regional attention decomposition, global LoRA/extra networks, global ControlNet units and low-VRAM |
+| Anima | **Production** | Regional cross-attention routing for verified still-image Anima checkpoints, Forge's native ER SDE/Beta flow path, CFG/negative prompts and global LoRA modifications |
+| Anima optional paths | **Unsupported** | Hires, Edit, refiner and ControlNet are blocked until their separate Anima runtime contracts are verified |
 | SDXL hires | **Advanced** | Regional masks and prompts are recompiled for the hires pass |
 | SDXL refiner | **Advanced** | The base pass is Regional; the refiner runs globally after explicit approval |
 | Scripts | **Advanced** | Verified scripts use an isolated Regional runner; unverified scripts require an explicit setting and generation-time approval |
 | Attention backend | **Production** | Forge's PyTorch attention backend is verified; an incompatible selected backend is blocked before patch installation |
-| Anima and other model families | **Unsupported** | No Regional adapter is advertised until that family has its own verified implementation |
+| Other model families | **Unsupported** | No Regional adapter is advertised until that family has its own verified implementation |
 
-LoRA tags and ControlNet units currently affect the whole generation, including when a LoRA tag is written in a local prompt. Region-local LoRA and region-local ControlNet routing are not claimed.
+LoRA tags affect the whole generation, including when a LoRA tag is written in a local prompt. ControlNet units are generation-global on the verified SD 1.5 and SDXL paths; Anima ControlNet remains blocked. Region-local LoRA and region-local ControlNet routing are not claimed.
 
 The current Forge Neo base is [`ff7b9ff5aca35b1a69ca8bd0f1f5def4ee6a0802`](https://github.com/Haoming02/sd-webui-forge-classic/commit/ff7b9ff5aca35b1a69ca8bd0f1f5def4ee6a0802).
 
