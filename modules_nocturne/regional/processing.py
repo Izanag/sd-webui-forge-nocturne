@@ -580,20 +580,59 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
             self.regional_runtime.end_batch()
             return result
 
+    def _cleanup_regional_scripts(self) -> BaseException | None:
+        runner = self.scripts
+        if runner is None:
+            return None
+        all_script_args = tuple(self.script_args or ())
+        first_error = None
+        ordered_scripts = getattr(runner, "ordered_scripts", None)
+        scripts_to_cleanup = (
+            ordered_scripts("process_before_every_sampling")
+            if callable(ordered_scripts)
+            else tuple(getattr(runner, "alwayson_scripts", ()))
+        )
+        for script in reversed(tuple(scripts_to_cleanup)):
+            cleanup = getattr(script, "cleanup_regional", None)
+            if not callable(cleanup):
+                continue
+            script_args = all_script_args[script.args_from : script.args_to]
+            try:
+                cleanup(self, *script_args)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+                else:
+                    add_note = getattr(first_error, "add_note", None)
+                    if callable(add_note):
+                        add_note(f"Additional Regional script cleanup failed: {error}")
+        return first_error
+
     def close(self):
+        script_error = self._cleanup_regional_scripts()
         runtime_error: BaseException | None = None
         if self.regional_runtime is not None:
             try:
                 self.regional_runtime.close()
             except BaseException as error:
                 runtime_error = error
+        if script_error is not None and runtime_error is not None:
+            add_note = getattr(script_error, "add_note", None)
+            if callable(add_note):
+                add_note(f"Regional runtime cleanup also failed: {runtime_error}")
         try:
             super().close()
         except BaseException as base_error:
+            if script_error is not None:
+                add_note = getattr(base_error, "add_note", None)
+                if callable(add_note):
+                    add_note(f"Regional script cleanup also failed: {script_error}")
             if runtime_error is not None:
                 add_note = getattr(base_error, "add_note", None)
                 if callable(add_note):
                     add_note(f"Regional runtime cleanup also failed: {runtime_error}")
             raise
+        if script_error is not None:
+            raise script_error
         if runtime_error is not None:
             raise runtime_error

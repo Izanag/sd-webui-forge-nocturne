@@ -508,6 +508,26 @@ class ControlNetForForgeOfficial(scripts.Script):
         params.model.process_after_every_sampling(p, params, *args, **kwargs)
         return
 
+    def cleanup_regional(self, p: StableDiffusionProcessing, *args):
+        """Remove direct model patches when a Regional job exits early."""
+
+        first_error = None
+        try:
+            for params in tuple(self.current_params.values()):
+                try:
+                    params.model.process_after_every_sampling(p, params)
+                except BaseException as error:
+                    if first_error is None:
+                        first_error = error
+                    else:
+                        add_note = getattr(first_error, "add_note", None)
+                        if callable(add_note):
+                            add_note(f"Additional ControlNet cleanup failed: {error}")
+        finally:
+            self.current_params = {}
+        if first_error is not None:
+            raise first_error
+
     @torch.no_grad()
     def process(self, p, *args, **kwargs):
         if getattr(p, "control_net_disabled", False):

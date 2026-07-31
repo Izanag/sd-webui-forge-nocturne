@@ -81,7 +81,7 @@ class AnimaArchitectureFacts:
                     "negative_prompt": "supported-when-cfg-is-not-1",
                     "hires": "blocked-unverified",
                     "edit": "blocked-unverified",
-                    "controlnet": "blocked-unverified",
+                    "controlnet": "supported-global-anima-lllite-lineart",
                     "refiner": "unsupported",
                 },
                 "resolution": {
@@ -555,7 +555,8 @@ class StrictAnimaAdapter:
     def unsupported_fields(self) -> frozenset[str]:
         return frozenset(
             {
-                "controlnet",
+                "controlnet.non_anima_lllite",
+                "controlnet.region_local",
                 "edit",
                 "passes.hires",
                 "passes.refiner",

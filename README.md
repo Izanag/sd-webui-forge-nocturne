@@ -14,15 +14,15 @@ Status meanings: **Production** is the normal supported path, **Advanced** is su
 | --- | --- | --- |
 | SD 1.5 | **Production** | Regional attention decomposition, global LoRA/extra networks, global ControlNet units, hires recompilation, low-VRAM and no-VRAM |
 | SDXL | **Production** | Regional attention decomposition, global LoRA/extra networks, global ControlNet units and low-VRAM |
-| Anima | **Production** | Regional cross-attention routing for verified still-image Anima checkpoints, Forge's native ER SDE/Beta flow path, CFG/negative prompts and global LoRA modifications |
-| Anima optional paths | **Unsupported** | Hires, Edit, refiner and ControlNet are blocked until their separate Anima runtime contracts are verified |
+| Anima | **Production** | Regional cross-attention routing for verified still-image Anima checkpoints, Forge's native ER SDE/Beta flow path, CFG/negative prompts, global LoRA modifications and generation-global Anima LLLite lineart ControlNet |
+| Anima optional paths | **Unsupported** | Hires, Edit, refiner, region-local ControlNet and Anima ControlNet types outside the verified LLLite lineart path |
 | SDXL hires | **Advanced** | Regional masks and prompts are recompiled for the hires pass |
 | SDXL refiner | **Advanced** | The base pass is Regional; the refiner runs globally after explicit approval |
 | Scripts | **Advanced** | Verified scripts use an isolated Regional runner; unverified scripts require an explicit setting and generation-time approval |
 | Attention backend | **Production** | Forge's PyTorch attention backend is verified; an incompatible selected backend is blocked before patch installation |
 | Other model families | **Unsupported** | No Regional adapter is advertised until that family has its own verified implementation |
 
-LoRA tags affect the whole generation, including when a LoRA tag is written in a local prompt. ControlNet units are generation-global on the verified SD 1.5 and SDXL paths; Anima ControlNet remains blocked. Region-local LoRA and region-local ControlNet routing are not claimed.
+LoRA tags affect the whole generation, including when a LoRA tag is written in a local prompt. ControlNet units are generation-global on the verified SD 1.5 and SDXL paths. Anima ControlNet support is limited to Forge's native Anima LLLite lineart path and is also generation-global. Region-local LoRA and region-local ControlNet routing are not claimed.
 
 The current Forge Neo base is [`ff7b9ff5aca35b1a69ca8bd0f1f5def4ee6a0802`](https://github.com/Haoming02/sd-webui-forge-classic/commit/ff7b9ff5aca35b1a69ca8bd0f1f5def4ee6a0802).
 
