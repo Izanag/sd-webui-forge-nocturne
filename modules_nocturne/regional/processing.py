@@ -322,10 +322,20 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
         adapter_version = getattr(adapter, "adapter_version", None)
         if adapter_version:
             runtime_options["adapter_version"] = str(adapter_version)
-        for name in ("mask_mapping_version", "routing_policy_version"):
+        for name in (
+            "mask_mapping_version",
+            "routing_policy_version",
+            "fusion_policy_version",
+        ):
             value = getattr(engine, name, None)
             if value:
                 runtime_options[name] = str(value)
+        path_limit = getattr(engine, "path_limit", None)
+        if path_limit is not None:
+            runtime_options["path_limit"] = int(path_limit)
+            runtime_options["path_count"] = 1 + sum(
+                region.enabled for region in authorized.plan.regions
+            )
         conditioning_policy_provider = getattr(adapter, "conditioning_policy", None)
         if callable(conditioning_policy_provider):
             policy = conditioning_policy_provider(float(self.cfg_scale))
@@ -375,6 +385,14 @@ class StableDiffusionProcessingRegional(processing.StableDiffusionProcessingTxt2
                 "active"
                 if conditioning_policy["negative_active"]
                 else conditioning_policy["negative_ignored_reason"]
+            )
+        fusion_policy_version = runtime_options.get("fusion_policy_version")
+        if fusion_policy_version:
+            self.extra_generation_params["Nocturne Regional Fusion Policy Version"] = str(
+                fusion_policy_version
+            )
+            self.extra_generation_params["Nocturne Regional Fusion Paths"] = str(
+                runtime_options["path_count"]
             )
         if authorized.engine.cost_warning:
             self.extra_generation_params["Nocturne Regional Warnings"] = (

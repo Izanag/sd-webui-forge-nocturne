@@ -250,7 +250,7 @@ class StrictSD15Adapter:
         return self.diagnose(model_context).matched
 
     def supported_engine_ids(self) -> frozenset[str]:
-        return frozenset({"attention-decomposition"})
+        return frozenset({"attention-decomposition", "denoising-fusion"})
 
     def unsupported_fields(self) -> frozenset[str]:
         return frozenset(
