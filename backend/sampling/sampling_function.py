@@ -300,10 +300,17 @@ def sampling_function_inner(model, x, timestep, uncond, cond, cond_scale, model_
     for fn in model_options.get("sampler_pre_cfg_function", []):
         model, cond, uncond_, x, timestep, model_options = fn(model, cond, uncond_, x, timestep, model_options)
 
+    calc_cond_batch = model_options.get(
+        "sampler_calc_cond_batch_function",
+        calc_cond_uncond_batch,
+    )
+    if not callable(calc_cond_batch):
+        raise TypeError("sampler_calc_cond_batch_function must be callable")
+
     if getattr(dynamic_args.context_handler, "should_use_context", lambda *args: False)(x):
-        cond_pred, uncond_pred = dynamic_args.context_handler.execute(calc_cond_uncond_batch, model, [cond, uncond_], x, timestep, model_options)
+        cond_pred, uncond_pred = dynamic_args.context_handler.execute(calc_cond_batch, model, [cond, uncond_], x, timestep, model_options)
     else:
-        cond_pred, uncond_pred = calc_cond_uncond_batch(model, cond, uncond_, x, timestep, model_options)
+        cond_pred, uncond_pred = calc_cond_batch(model, cond, uncond_, x, timestep, model_options)
 
     if "sampler_cfg_function" in model_options:
         args = {"cond": x - cond_pred, "uncond": x - uncond_pred, "cond_scale": cond_scale, "timestep": timestep, "input": x, "sigma": timestep, "cond_denoised": cond_pred, "uncond_denoised": uncond_pred, "model": model, "model_options": model_options}
